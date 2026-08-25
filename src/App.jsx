@@ -1,0 +1,1072 @@
+import React, { useState, useEffect, useMemo, useCallback } from "react";
+
+/* ===================== CLOUD STORAGE LAYER =====================
+   Data is stored with window.storage (shared = true) so every device
+   that opens this app link sees the SAME data — that's what makes it
+   usable "everywhere" instead of being stuck on one phone/tablet.
+   Boxes/history/water are split into chunks so the app scales to
+   tens of thousands of records without hitting the 5MB per-key limit,
+   and a normal edit only has to re-write the one chunk it touched. */
+const SHARED = true;
+const SETTINGS_KEY = "crabfarm:settings";
+const COL_BOXES = "boxes";
+const COL_HISTORY = "history";
+const COL_WATER = "water";
+const CHUNKS = { boxes: 24, history: 10, water: 10 }; // 24 chunks * ~1200 boxes each supports 30,000+ boxes safely under the 5MB/key limit
+function chunkKey(prefix, i) {
+  return `crabfarm:${prefix}:${i}`;
+}
+function hashStr(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = (h << 5) + h + s.charCodeAt(i) >>> 0;
+  return h;
+}
+function chunkIndex(id, n) {
+  return hashStr(String(id)) % n;
+}
+function groupByChunk(items, n) {
+  const map = /* @__PURE__ */ new Map();
+  for (let i = 0; i < n; i++) map.set(i, []);
+  items.forEach((item) => {
+    const c = chunkIndex(item.id, n);
+    map.get(c).push(item);
+  });
+  return map;
+}
+async function storageGetRaw(key) {
+  try {
+    const res = await window.storage.get(key, SHARED);
+    return res ? res.value : null;
+  } catch (e) {
+    return null;
+  }
+}
+async function storageSetRaw(key, value) {
+  try {
+    const res = await window.storage.set(key, value, SHARED);
+    if (!res) console.error("storage set returned null", key);
+  } catch (e) {
+    console.error("storage set failed", key, e);
+  }
+}
+async function storageDeleteRaw(key) {
+  try {
+    await window.storage.delete(key, SHARED);
+  } catch (e) {
+  }
+}
+async function storeGetCollection(prefix) {
+  let keys = [];
+  try {
+    const res = await window.storage.list(`crabfarm:${prefix}:`, SHARED);
+    keys = res && res.keys ? res.keys : [];
+  } catch (e) {
+    keys = [];
+  }
+  if (!keys.length) return [];
+  const raws = await Promise.all(keys.map((k) => storageGetRaw(k)));
+  let out = [];
+  raws.forEach((raw) => {
+    if (!raw) return;
+    try {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) out = out.concat(arr);
+    } catch (e) {
+    }
+  });
+  return out;
+}
+async function storeSetCollection(prefix, fullArray, changedIds) {
+  const n = CHUNKS[prefix];
+  const map = groupByChunk(fullArray, n);
+  const targets = changedIds && changedIds.length ? Array.from(new Set(changedIds.map((id) => chunkIndex(id, n)))) : Array.from({ length: n }, (_, i) => i);
+  await Promise.all(targets.map((c) => storageSetRaw(chunkKey(prefix, c), JSON.stringify(map.get(c) || []))));
+}
+async function storeClearCollection(prefix) {
+  const n = CHUNKS[prefix];
+  await Promise.all(Array.from({ length: n }, (_, i) => storageDeleteRaw(chunkKey(prefix, i))));
+}
+async function storeGetSettings() {
+  const raw = await storageGetRaw(SETTINGS_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+async function storeSetSettings(s) {
+  await storageSetRaw(SETTINGS_KEY, JSON.stringify(s));
+}
+async function storeClearSettings() {
+  await storageDeleteRaw(SETTINGS_KEY);
+}
+/* ---- app password gate ---- */
+const AUTH_KEY = "crabfarm:auth-credentials";
+const DEFAULT_USERNAME = "anda";
+const DEFAULT_PASSWORD = "Tt0890008848";
+async function storeGetCredentials() {
+  const raw = await storageGetRaw(AUTH_KEY);
+  if (!raw) return { username: DEFAULT_USERNAME, password: DEFAULT_PASSWORD };
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      username: parsed && parsed.username ? parsed.username : DEFAULT_USERNAME,
+      password: parsed && parsed.password ? parsed.password : DEFAULT_PASSWORD
+    };
+  } catch (e) {
+    return { username: DEFAULT_USERNAME, password: DEFAULT_PASSWORD };
+  }
+}
+async function storeSetPassword(pw) {
+  const current = await storeGetCredentials();
+  await storageSetRaw(AUTH_KEY, JSON.stringify({ username: current.username, password: pw }));
+}
+/* ================================================================= */
+
+const DEFAULT_PARAMS = [
+  { key: "salinity", label: "\u0E04\u0E27\u0E32\u0E21\u0E40\u0E04\u0E47\u0E21", unit: "ppt", min: 28, target: 32, max: 35, doseFactor: 1, doseUnit: "\u0E01\u0E23\u0E31\u0E21 \u0E40\u0E01\u0E25\u0E37\u0E2D\u0E2A\u0E31\u0E07\u0E40\u0E04\u0E23\u0E32\u0E30\u0E2B\u0E4C / \u0E25\u0E34\u0E15\u0E23 \u0E15\u0E48\u0E2D\u0E01\u0E32\u0E23\u0E40\u0E1E\u0E34\u0E48\u0E21 1 ppt", dosable: true, lowerIsBetter: false },
+  { key: "ph", label: "pH", unit: "", min: 7.8, target: 8.1, max: 8.4, doseFactor: 0, doseUnit: "", dosable: false, lowerIsBetter: false },
+  { key: "temp", label: "\u0E2D\u0E38\u0E13\u0E2B\u0E20\u0E39\u0E21\u0E34", unit: "\xB0C", min: 26, target: 29, max: 32, doseFactor: 0, doseUnit: "", dosable: false, lowerIsBetter: false },
+  { key: "ammonia", label: "\u0E41\u0E2D\u0E21\u0E42\u0E21\u0E40\u0E19\u0E35\u0E22 (NH3/NH4)", unit: "mg/L", min: 0, target: 0, max: 0.25, doseFactor: 0, doseUnit: "", dosable: false, lowerIsBetter: true },
+  { key: "nitrite", label: "\u0E44\u0E19\u0E44\u0E15\u0E23\u0E17\u0E4C", unit: "mg/L", min: 0, target: 0, max: 0.5, doseFactor: 0, doseUnit: "", dosable: false, lowerIsBetter: true },
+  { key: "alkalinity", label: "\u0E04\u0E48\u0E32\u0E14\u0E48\u0E32\u0E07", unit: "dKH", min: 7, target: 9, max: 12, doseFactor: 0.05, doseUnit: "\u0E2B\u0E19\u0E48\u0E27\u0E22\u0E1C\u0E07\u0E1B\u0E23\u0E31\u0E1A\u0E14\u0E48\u0E32\u0E07 / \u0E25\u0E34\u0E15\u0E23 \u0E15\u0E48\u0E2D 1 dKH", dosable: true, lowerIsBetter: false },
+  { key: "calcium", label: "\u0E41\u0E04\u0E25\u0E40\u0E0B\u0E35\u0E22\u0E21", unit: "mg/L", min: 380, target: 420, max: 450, doseFactor: 0.02, doseUnit: "\u0E2B\u0E19\u0E48\u0E27\u0E22\u0E41\u0E04\u0E25\u0E40\u0E0B\u0E35\u0E22\u0E21\u0E40\u0E2A\u0E23\u0E34\u0E21 / \u0E25\u0E34\u0E15\u0E23 \u0E15\u0E48\u0E2D 1 mg/L", dosable: true, lowerIsBetter: false },
+  { key: "do", label: "\u0E2D\u0E2D\u0E01\u0E0B\u0E34\u0E40\u0E08\u0E19\u0E25\u0E30\u0E25\u0E32\u0E22\u0E19\u0E49\u0E33 (DO)", unit: "mg/L", min: 5, target: 6.5, max: 9, doseFactor: 0, doseUnit: "", dosable: false, lowerIsBetter: false }
+];
+const DEFAULT_SETTINGS = {
+  tankVolumeLiters: 1e3,
+  feedRatePercent: 5,
+  moltReminderDays: 21,
+  parameters: DEFAULT_PARAMS,
+  layoutRows: ["A", "B", "C", "D"],
+  layoutSlotsPerRow: 5
+};
+const DISPLAY = "'Space Grotesk', 'Segoe UI', sans-serif";
+const BODY = "'IBM Plex Sans', 'Segoe UI', sans-serif";
+const MONO = "'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace";
+const C = {
+  ink: "#0B2333",
+  brine: "#123B4F",
+  paper: "#EEF2ED",
+  card: "#FFFFFF",
+  line: "#D7E0D8",
+  text: "#0F241E",
+  muted: "#5B7268",
+  coral: "#E2603A",
+  seagrass: "#2E7D58",
+  water: "#2C7DA0",
+  amber: "#C98A2E"
+};
+const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+const todayStr = () => (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+const fmtDate = (d) => {
+  if (!d) return "\u2014";
+  try {
+    return new Date(d).toLocaleDateString("th-TH", { year: "numeric", month: "short", day: "numeric" });
+  } catch {
+    return d;
+  }
+};
+const daysBetween = (a, b) => {
+  if (!a || !b) return null;
+  const d1 = new Date(a), d2 = new Date(b);
+  return Math.round((d2 - d1) / 864e5);
+};
+const money = (n) => n === "" || n === null || n === void 0 || isNaN(n) ? "\u2014" : Number(n).toLocaleString("th-TH", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+const num = (n, d = 0) => n === "" || n === null || n === void 0 || isNaN(n) ? "\u2014" : Number(n).toLocaleString("th-TH", { minimumFractionDigits: d, maximumFractionDigits: d });
+function LogoMark({ size = 40 }) {
+  return /* @__PURE__ */ React.createElement("svg", { width: size, height: size * 0.75, viewBox: "0 0 400 300" }, /* @__PURE__ */ React.createElement("g", { transform: "translate(200,150) scale(1.25)" }, /* @__PURE__ */ React.createElement("g", { stroke: C.coral, strokeWidth: "17", strokeLinecap: "round", fill: "none" }, /* @__PURE__ */ React.createElement("path", { d: "M-52,44 Q-96,58 -116,92" }), /* @__PURE__ */ React.createElement("path", { d: "M-46,66 Q-84,84 -102,116" }), /* @__PURE__ */ React.createElement("path", { d: "M-34,84 Q-66,102 -80,130" }), /* @__PURE__ */ React.createElement("path", { d: "M52,44 Q96,58 116,92" }), /* @__PURE__ */ React.createElement("path", { d: "M46,66 Q84,84 102,116" }), /* @__PURE__ */ React.createElement("path", { d: "M34,84 Q66,102 80,130" })), /* @__PURE__ */ React.createElement("g", { transform: "translate(-50,0) rotate(-24) scale(1.1)" }, /* @__PURE__ */ React.createElement("path", { d: "M0,4 C -20,-6 -28,-28 -24,-50 C -20,-74 -2,-90 18,-86 C 34,-82 40,-62 34,-42 C 30,-28 18,-10 4,2 Z", fill: C.coral }), /* @__PURE__ */ React.createElement("path", { d: "M14,-56 C 22,-52 24,-42 20,-34", fill: "none", stroke: C.ink, strokeWidth: "4", strokeLinecap: "round", opacity: "0.55" })), /* @__PURE__ */ React.createElement("g", { transform: "translate(50,0) rotate(24) scale(-1.1,1.1)" }, /* @__PURE__ */ React.createElement("path", { d: "M0,4 C -20,-6 -28,-28 -24,-50 C -20,-74 -2,-90 18,-86 C 34,-82 40,-62 34,-42 C 30,-28 18,-10 4,2 Z", fill: C.coral }), /* @__PURE__ */ React.createElement("path", { d: "M14,-56 C 22,-52 24,-42 20,-34", fill: "none", stroke: C.ink, strokeWidth: "4", strokeLinecap: "round", opacity: "0.55" })), /* @__PURE__ */ React.createElement("ellipse", { cx: "0", cy: "32", rx: "78", ry: "48", fill: C.coral }), /* @__PURE__ */ React.createElement("path", { d: "M-56,17 Q0,-6 56,17", fill: "none", stroke: C.ink, strokeWidth: "3", opacity: "0.3" }), /* @__PURE__ */ React.createElement("path", { d: "M-64,42 Q0,66 64,42", fill: "none", stroke: C.ink, strokeWidth: "3", opacity: "0.3" }), /* @__PURE__ */ React.createElement("line", { x1: "-22", y1: "-6", x2: "-31", y2: "-30", stroke: C.ink, strokeWidth: "6", strokeLinecap: "round" }), /* @__PURE__ */ React.createElement("line", { x1: "22", y1: "-6", x2: "31", y2: "-30", stroke: C.ink, strokeWidth: "6", strokeLinecap: "round" }), /* @__PURE__ */ React.createElement("circle", { cx: "-31", cy: "-34", r: "8.5", fill: C.ink }), /* @__PURE__ */ React.createElement("circle", { cx: "31", cy: "-34", r: "8.5", fill: C.ink })));
+}
+function IconBell({ size = 18 }) {
+  return /* @__PURE__ */ React.createElement("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.8", strokeLinecap: "round", strokeLinejoin: "round" }, /* @__PURE__ */ React.createElement("path", { d: "M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" }), /* @__PURE__ */ React.createElement("path", { d: "M13.73 21a2 2 0 0 1-3.46 0" }));
+}
+function Sparkline({ values, min, max, color }) {
+  if (!values || values.length < 2) {
+    return /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, fontFamily: MONO } }, "\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E1E\u0E2D");
+  }
+  const w = 160, h = 36, pad = 3;
+  const lo = Math.min(min, ...values), hi = Math.max(max, ...values);
+  const range = hi - lo || 1;
+  const pts = values.map((v, i) => {
+    const x = pad + i / (values.length - 1) * (w - pad * 2);
+    const y = h - pad - (v - lo) / range * (h - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  return /* @__PURE__ */ React.createElement("svg", { width: w, height: h, viewBox: `0 0 ${w} ${h}` }, /* @__PURE__ */ React.createElement("polyline", { points: pts.join(" "), fill: "none", stroke: color, strokeWidth: "1.8", strokeLinecap: "round", strokeLinejoin: "round" }), /* @__PURE__ */ React.createElement("circle", { cx: pts[pts.length - 1].split(",")[0], cy: pts[pts.length - 1].split(",")[1], r: "2.6", fill: color }));
+}
+function GaugeBar({ param, value }) {
+  const { min, target, max, unit, label, lowerIsBetter } = param;
+  const lo = Math.min(min, value != null ? value : min) - (max - min) * 0.15 || 0;
+  const hi = Math.max(max, value != null ? value : max) + (max - min) * 0.15 || 1;
+  const span = hi - lo || 1;
+  const pct = (v) => Math.max(0, Math.min(100, (v - lo) / span * 100));
+  const inRange = value !== null && value !== void 0 && value >= min && value <= max;
+  const markColor = value === null || value === void 0 ? C.muted : inRange ? C.seagrass : C.coral;
+  return /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 4 } }, /* @__PURE__ */ React.createElement("span", { style: { color: C.text, fontWeight: 600 } }, label), /* @__PURE__ */ React.createElement("span", { style: { fontFamily: MONO, color: markColor, fontWeight: 700 } }, value === null || value === void 0 ? "\u2014" : `${num(value, value < 10 ? 2 : 1)} ${unit}`)), /* @__PURE__ */ React.createElement("div", { style: { position: "relative", height: 10, borderRadius: 6, background: "#E4E9E2", overflow: "visible" } }, /* @__PURE__ */ React.createElement(
+    "div",
+    {
+      style: {
+        position: "absolute",
+        left: `${pct(min)}%`,
+        width: `${Math.max(2, pct(max) - pct(min))}%`,
+        top: 0,
+        bottom: 0,
+        background: "rgba(46,125,88,0.28)",
+        borderRadius: 6
+      }
+    }
+  ), value !== null && value !== void 0 && /* @__PURE__ */ React.createElement(
+    "div",
+    {
+      title: `${value}`,
+      style: {
+        position: "absolute",
+        left: `calc(${pct(value)}% - 4px)`,
+        top: -3,
+        width: 8,
+        height: 16,
+        borderRadius: 3,
+        background: markColor,
+        boxShadow: "0 1px 3px rgba(0,0,0,0.35)"
+      }
+    }
+  )), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10, color: C.muted, marginTop: 2, fontFamily: MONO } }, /* @__PURE__ */ React.createElement("span", null, min, unit), /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.7 } }, "\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22 ", target, unit), /* @__PURE__ */ React.createElement("span", null, max, unit)));
+}
+function Pill({ children, tone = "muted" }) {
+  const tones = {
+    muted: { bg: "#E4E9E2", fg: C.muted },
+    good: { bg: "rgba(46,125,88,0.14)", fg: C.seagrass },
+    warn: { bg: "rgba(201,138,46,0.16)", fg: C.amber },
+    danger: { bg: "rgba(226,96,58,0.14)", fg: C.coral },
+    info: { bg: "rgba(44,125,160,0.14)", fg: C.water }
+  };
+  const t = tones[tone] || tones.muted;
+  return /* @__PURE__ */ React.createElement("span", { style: { background: t.bg, color: t.fg, fontSize: 11.5, fontWeight: 700, padding: "3px 9px", borderRadius: 20, letterSpacing: 0.2 } }, children);
+}
+function Field({ label, children, hint }) {
+  return /* @__PURE__ */ React.createElement("label", { style: { display: "block", marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: C.brine, marginBottom: 4 } }, label), children, hint && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 3 } }, hint));
+}
+const inputStyle = {
+  width: "100%",
+  padding: "9px 11px",
+  borderRadius: 8,
+  border: `1px solid ${C.line}`,
+  fontSize: 14,
+  fontFamily: BODY,
+  color: C.text,
+  background: "#FBFCFA",
+  boxSizing: "border-box"
+};
+function Btn({ children, onClick, tone = "ink", size = "md", type = "button", disabled }) {
+  const tones = {
+    ink: { bg: C.ink, fg: "#fff" },
+    coral: { bg: C.coral, fg: "#fff" },
+    seagrass: { bg: C.seagrass, fg: "#fff" },
+    ghost: { bg: "transparent", fg: C.ink, border: `1px solid ${C.line}` },
+    danger: { bg: "transparent", fg: C.coral, border: `1px solid rgba(226,96,58,0.4)` }
+  };
+  const t = tones[tone] || tones.ink;
+  const pad = size === "sm" ? "6px 12px" : "10px 16px";
+  return /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      type,
+      onClick,
+      disabled,
+      style: {
+        background: t.bg,
+        color: t.fg,
+        border: t.border || "none",
+        padding: pad,
+        borderRadius: 8,
+        fontSize: size === "sm" ? 12.5 : 14,
+        fontWeight: 700,
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.5 : 1,
+        fontFamily: BODY,
+        letterSpacing: 0.1,
+        whiteSpace: "nowrap"
+      }
+    },
+    children
+  );
+}
+function Modal({ title, onClose, children, wide }) {
+  return /* @__PURE__ */ React.createElement(
+    "div",
+    {
+      onClick: onClose,
+      style: {
+        position: "fixed",
+        inset: 0,
+        background: "rgba(11,35,51,0.55)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 100,
+        padding: 16
+      }
+    },
+    /* @__PURE__ */ React.createElement(
+      "div",
+      {
+        onClick: (e) => e.stopPropagation(),
+        style: {
+          background: C.card,
+          borderRadius: 14,
+          padding: 22,
+          width: wide ? 620 : 440,
+          maxWidth: "94vw",
+          maxHeight: "88vh",
+          overflowY: "auto",
+          boxShadow: "0 20px 60px rgba(11,35,51,0.35)"
+        }
+      },
+      /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: DISPLAY, fontSize: 19, fontWeight: 700, color: C.ink } }, title), /* @__PURE__ */ React.createElement("button", { onClick: onClose, style: { background: "none", border: "none", fontSize: 20, color: C.muted, cursor: "pointer", lineHeight: 1 } }, "\u2715")),
+      children
+    )
+  );
+}
+function computeBoxStatus(box, moltReminderDays) {
+  const isEmpty = box.status === "empty";
+  const lastMolt = box.moltHistory && box.moltHistory.length ? box.moltHistory[box.moltHistory.length - 1] : null;
+  const daysSinceMolt = lastMolt ? daysBetween(lastMolt, todayStr()) : null;
+  const daysSinceStock = box.stockDate ? daysBetween(box.stockDate, todayStr()) : null;
+  const eggReady = !isEmpty && box.sex === "female" && Number(box.eggPercent) >= 100;
+  const weightReady = !isEmpty && box.targetWeight && Number(box.currentWeight) >= Number(box.targetWeight);
+  const moltDue = !isEmpty && daysSinceMolt !== null && daysSinceMolt >= moltReminderDays;
+  const ready = eggReady || weightReady;
+  return { isEmpty, lastMolt, daysSinceMolt, daysSinceStock, eggReady, weightReady, moltDue, ready };
+}
+function parseBoxCode(code) {
+  const m = String(code || "").trim().toUpperCase().match(/^([A-Z]+)0*([0-9]+)$/);
+  if (!m) return null;
+  return { row: m[1], col: Number(m[2]) };
+}
+function makeBoxCode(row, col) {
+  return `${row}${String(col).padStart(2, "0")}`;
+}
+function BoxCard({ box, onOpen, onQuickHarvest, moltReminderDays }) {
+  const { isEmpty, lastMolt, daysSinceMolt, daysSinceStock, eggReady, weightReady, moltDue } = computeBoxStatus(box, moltReminderDays);
+  return /* @__PURE__ */ React.createElement(
+    "div",
+    {
+      onClick: () => onOpen(box),
+      style: {
+        background: C.card,
+        border: `1px solid ${C.line}`,
+        borderRadius: 12,
+        padding: 14,
+        cursor: "pointer",
+        position: "relative",
+        transition: "box-shadow .15s",
+        borderLeft: `4px solid ${isEmpty ? C.line : eggReady || weightReady ? C.coral : C.seagrass}`
+      }
+    },
+    /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: MONO, fontWeight: 700, fontSize: 16, color: C.ink } }, "#", box.boxNumber), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted } }, "\u0E23\u0E38\u0E48\u0E19\u0E17\u0E35\u0E48 ", box.batchNumber)), isEmpty ? /* @__PURE__ */ React.createElement(Pill, { tone: "muted" }, "\u0E27\u0E48\u0E32\u0E07") : /* @__PURE__ */ React.createElement(Pill, { tone: box.sex === "female" ? "danger" : "info" }, box.sex === "female" ? "\u2640 \u0E15\u0E31\u0E27\u0E40\u0E21\u0E35\u0E22" : "\u2642 \u0E15\u0E31\u0E27\u0E1C\u0E39\u0E49")),
+    !isEmpty ? /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, fontSize: 12.5, color: C.text, lineHeight: 1.9 } }, /* @__PURE__ */ React.createElement("div", null, "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01: ", /* @__PURE__ */ React.createElement("b", { style: { fontFamily: MONO } }, num(box.currentWeight), " g"), box.targetWeight ? /* @__PURE__ */ React.createElement("span", { style: { color: C.muted } }, " / \u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22 ", num(box.targetWeight), " g") : null), box.sex === "female" && /* @__PURE__ */ React.createElement("div", null, "\u0E44\u0E02\u0E48: ", /* @__PURE__ */ React.createElement("b", { style: { fontFamily: MONO, color: box.eggPercent >= 100 ? C.coral : C.text } }, num(box.eggPercent), "%")), /* @__PURE__ */ React.createElement("div", null, "\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07\u0E21\u0E32\u0E41\u0E25\u0E49\u0E27: ", /* @__PURE__ */ React.createElement("b", { style: { fontFamily: MONO } }, daysSinceStock != null ? daysSinceStock : "\u2014", " \u0E27\u0E31\u0E19")), /* @__PURE__ */ React.createElement("div", null, "\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A\u0E25\u0E48\u0E32\u0E2A\u0E38\u0E14: ", lastMolt ? `${fmtDate(lastMolt)} (${daysSinceMolt} \u0E27\u0E31\u0E19\u0E01\u0E48\u0E2D\u0E19)` : "\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" } }, eggReady && /* @__PURE__ */ React.createElement(Pill, { tone: "danger" }, "\u0E44\u0E02\u0E48\u0E40\u0E15\u0E47\u0E21 \u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E08\u0E31\u0E1A"), weightReady && /* @__PURE__ */ React.createElement(Pill, { tone: "danger" }, "\u0E16\u0E36\u0E07\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22"), moltDue && /* @__PURE__ */ React.createElement(Pill, { tone: "warn" }, "\u0E40\u0E01\u0E34\u0E19\u0E01\u0E33\u0E2B\u0E19\u0E14\u0E15\u0E23\u0E27\u0E08\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A")), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 12 } }, /* @__PURE__ */ React.createElement(Btn, { size: "sm", tone: "coral", onClick: (e) => {
+      e.stopPropagation();
+      onQuickHarvest(box);
+    } }, "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E08\u0E31\u0E1A\u0E1B\u0E39"))) : /* @__PURE__ */ React.createElement("div", { style: { marginTop: 14, fontSize: 12.5, color: C.muted } }, "\u0E41\u0E15\u0E30\u0E40\u0E1E\u0E37\u0E48\u0E2D\u0E25\u0E07\u0E1B\u0E39\u0E43\u0E2B\u0E21\u0E48\u0E43\u0E19\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E19\u0E35\u0E49")
+  );
+}
+function FloorPlanCell({ code, box, moltReminderDays, onOpen, onQuickHarvest, onAddAt }) {
+  if (!box) {
+    return /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        onClick: () => onAddAt(code),
+        style: {
+          background: "#F2F5F1",
+          border: `1.5px dashed ${C.line}`,
+          borderRadius: 10,
+          padding: "12px 10px",
+          textAlign: "left",
+          cursor: "pointer",
+          minHeight: 84,
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "space-between"
+        }
+      },
+      /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: MONO, fontWeight: 700, fontSize: 14, color: C.muted } }, code), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 14, opacity: 0.5 } }, "\u{1F4E6}")),
+      /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted } }, "\u0E27\u0E48\u0E32\u0E07")
+    );
+  }
+  const { isEmpty, daysSinceStock, ready, moltDue } = computeBoxStatus(box, moltReminderDays);
+  const tone = ready ? "good" : moltDue ? "bad" : "warn";
+  const palette = {
+    good: { bg: "rgba(46,125,88,0.10)", border: C.seagrass, icon: "\u2713", iconBg: C.seagrass },
+    warn: { bg: "rgba(201,138,46,0.10)", border: C.amber, icon: null, iconBg: null },
+    bad: { bg: "rgba(226,96,58,0.10)", border: C.coral, icon: "!", iconBg: C.coral }
+  }[tone];
+  return /* @__PURE__ */ React.createElement(
+    "div",
+    {
+      onClick: () => onOpen(box),
+      style: {
+        background: palette.bg,
+        border: `1.5px solid ${palette.border}`,
+        borderRadius: 10,
+        padding: "12px 10px",
+        cursor: "pointer",
+        minHeight: 84,
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "space-between"
+      }
+    },
+    /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: MONO, fontWeight: 700, fontSize: 14, color: C.ink } }, box.boxNumber), palette.icon && /* @__PURE__ */ React.createElement(
+      "span",
+      {
+        onClick: (e) => {
+          if (tone === "good") {
+            e.stopPropagation();
+            onQuickHarvest(box);
+          }
+        },
+        title: tone === "good" ? "\u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E08\u0E31\u0E1A \u2014 \u0E41\u0E15\u0E30\u0E40\u0E1E\u0E37\u0E48\u0E2D\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E08\u0E31\u0E1A\u0E1B\u0E39" : "\u0E40\u0E01\u0E34\u0E19\u0E01\u0E33\u0E2B\u0E19\u0E14\u0E15\u0E23\u0E27\u0E08\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A",
+        style: {
+          width: 18,
+          height: 18,
+          borderRadius: "50%",
+          background: palette.iconBg,
+          color: "#fff",
+          fontSize: 11,
+          fontWeight: 700,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0
+        }
+      },
+      palette.icon
+    )),
+    /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.text, fontFamily: MONO, lineHeight: 1.5 } }, /* @__PURE__ */ React.createElement("div", null, num(box.currentWeight), "g"), /* @__PURE__ */ React.createElement("div", { style: { color: C.muted } }, daysSinceStock != null ? daysSinceStock : "\u2014", " \u0E27\u0E31\u0E19"))
+  );
+}
+function FloorPlanView({ boxes, settings, onOpenBox, onQuickHarvest, onAddAt }) {
+  const allRows = settings.layoutRows && settings.layoutRows.length ? settings.layoutRows : ["A"];
+  const perRow = settings.layoutSlotsPerRow || 5;
+  const totalCells = allRows.length * perRow;
+  const LARGE_LAYOUT = totalCells > 400;
+  const [activeRow, setActiveRow] = useState(allRows[0]);
+  const rows = LARGE_LAYOUT ? [allRows.includes(activeRow) ? activeRow : allRows[0]] : allRows;
+  const byCode = useMemo(() => {
+    const map = {};
+    boxes.forEach((b) => {
+      map[String(b.boxNumber).trim().toUpperCase()] = b;
+    });
+    return map;
+  }, [boxes]);
+  const unmatched = useMemo(
+    () => boxes.filter((b) => !parseBoxCode(b.boxNumber)),
+    [boxes]
+  );
+  return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 16, fontSize: 12, color: C.muted, alignItems: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 12, height: 12, borderRadius: 3, background: "rgba(46,125,88,0.5)", display: "inline-block" } }), " \u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E08\u0E31\u0E1A"), /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 12, height: 12, borderRadius: 3, background: "rgba(201,138,46,0.5)", display: "inline-block" } }), " \u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07"), /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 12, height: 12, borderRadius: 3, background: "rgba(226,96,58,0.5)", display: "inline-block" } }), " \u0E15\u0E49\u0E2D\u0E07\u0E15\u0E23\u0E27\u0E08\u0E2A\u0E2D\u0E1A"), /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 12, height: 12, borderRadius: 3, background: "#F2F5F1", border: `1px dashed ${C.line}`, display: "inline-block" } }), " \u0E27\u0E48\u0E32\u0E07")), LARGE_LAYOUT && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("select", { style: { ...inputStyle, width: 160 }, value: rows[0], onChange: (e) => setActiveRow(e.target.value) }, allRows.map((r) => /* @__PURE__ */ React.createElement("option", { key: r, value: r }, "\u0E41\u0E16\u0E27 ", r))), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: C.muted } }, "\u0E1C\u0E31\u0E07\u0E04\u0E2D\u0E19\u0E42\u0E14\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14 ", totalCells.toLocaleString(), " \u0E0A\u0E48\u0E2D\u0E07 \u2014 \u0E40\u0E25\u0E37\u0E2D\u0E01\u0E14\u0E39\u0E17\u0E35\u0E25\u0E30\u0E41\u0E16\u0E27\u0E40\u0E1E\u0E37\u0E48\u0E2D\u0E04\u0E27\u0E32\u0E21\u0E25\u0E37\u0E48\u0E19\u0E44\u0E2B\u0E25 \u0E2B\u0E23\u0E37\u0E2D\u0E2A\u0E25\u0E31\u0E1A\u0E44\u0E1B\u0E43\u0E0A\u0E49 \u0E23\u0E32\u0E22\u0E01\u0E32\u0E23 \u0E41\u0E25\u0E49\u0E27\u0E04\u0E49\u0E19\u0E2B\u0E32\u0E14\u0E49\u0E27\u0E22\u0E40\u0E25\u0E02\u0E01\u0E25\u0E48\u0E2D\u0E07")), rows.map((row) => /* @__PURE__ */ React.createElement("div", { key: row, style: { marginBottom: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, color: C.brine, marginBottom: 8 } }, "\u0E41\u0E16\u0E27 ", row), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(120px, 1fr))`, gap: 10 } }, Array.from({ length: perRow }, (_, i) => i + 1).map((col) => {
+    const code = makeBoxCode(row, col);
+    const box = byCode[code];
+    return /* @__PURE__ */ React.createElement(
+      FloorPlanCell,
+      {
+        key: code,
+        code,
+        box,
+        moltReminderDays: settings.moltReminderDays,
+        onOpen: onOpenBox,
+        onQuickHarvest,
+        onAddAt
+      }
+    );
+  })))), unmatched.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: DISPLAY, fontWeight: 700, fontSize: 13, color: C.brine, marginBottom: 8 } }, "\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E2D\u0E37\u0E48\u0E19\u0E46 (\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E44\u0E21\u0E48\u0E15\u0E23\u0E07\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A\u0E41\u0E16\u0E27 \u0E40\u0E0A\u0E48\u0E19 A01)"), unmatched.length > 300 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 8 } }, "\u0E41\u0E2A\u0E14\u0E07 300 \u0E08\u0E32\u0E01 ", unmatched.length.toLocaleString(), " \u0E01\u0E25\u0E48\u0E2D\u0E07 \u2014 \u0E44\u0E1B\u0E17\u0E35\u0E48 \u0E23\u0E32\u0E22\u0E01\u0E32\u0E23 \u0E40\u0E1E\u0E37\u0E48\u0E2D\u0E14\u0E39\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(120px, 1fr))`, gap: 10 } }, unmatched.slice(0, 300).map((b) => /* @__PURE__ */ React.createElement(
+    FloorPlanCell,
+    {
+      key: b.id,
+      code: b.boxNumber,
+      box: b,
+      moltReminderDays: settings.moltReminderDays,
+      onOpen: onOpenBox,
+      onQuickHarvest,
+      onAddAt
+    }
+  )))));
+}
+function BoxFormModal({ initial, onSave, onClose, onDelete, nextBatchFor, prefillBoxNumber }) {
+  const isNew = !initial;
+  const [f, setF] = useState(
+    initial ? { ...initial } : {
+      id: uid(),
+      boxNumber: prefillBoxNumber || "",
+      batchNumber: 1,
+      sex: "male",
+      stockDate: todayStr(),
+      moltHistory: [],
+      currentWeight: "",
+      targetWeight: "",
+      eggPercent: 0,
+      feedPerDay: "",
+      costPerCrab: "",
+      notes: "",
+      status: "active",
+      harvestDate: null
+    }
+  );
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const restock = f.status === "empty";
+  const submit = () => {
+    if (!f.boxNumber) {
+      alert("\u0E01\u0E23\u0E38\u0E13\u0E32\u0E23\u0E30\u0E1A\u0E38\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E01\u0E25\u0E48\u0E2D\u0E07");
+      return;
+    }
+    const payload = restock ? { ...f, status: "active", batchNumber: nextBatchFor ? nextBatchFor(f.boxNumber) : (f.batchNumber || 1) + 1, stockDate: f.stockDate || todayStr(), moltHistory: [], harvestDate: null } : { ...f, status: "active" };
+    onSave(payload);
+  };
+  const addMoltToday = () => {
+    set("moltHistory", [...f.moltHistory || [], todayStr()]);
+  };
+  return /* @__PURE__ */ React.createElement(Modal, { title: isNew ? "\u0E40\u0E1E\u0E34\u0E48\u0E21\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E1B\u0E39\u0E43\u0E2B\u0E21\u0E48" : restock ? `\u0E25\u0E07\u0E1B\u0E39\u0E43\u0E2B\u0E21\u0E48 \u2014 \u0E01\u0E25\u0E48\u0E2D\u0E07 #${f.boxNumber}` : `\u0E01\u0E25\u0E48\u0E2D\u0E07 #${f.boxNumber} \xB7 \u0E23\u0E38\u0E48\u0E19\u0E17\u0E35\u0E48 ${f.batchNumber}`, onClose, wide: true }, /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" } }, /* @__PURE__ */ React.createElement(Field, { label: "\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E01\u0E25\u0E48\u0E2D\u0E07" }, /* @__PURE__ */ React.createElement("input", { style: inputStyle, value: f.boxNumber, disabled: !isNew, onChange: (e) => set("boxNumber", e.target.value), placeholder: "\u0E40\u0E0A\u0E48\u0E19 A-01" })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E40\u0E1E\u0E28" }, /* @__PURE__ */ React.createElement("select", { style: inputStyle, value: f.sex, onChange: (e) => set("sex", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "male" }, "\u0E15\u0E31\u0E27\u0E1C\u0E39\u0E49"), /* @__PURE__ */ React.createElement("option", { value: "female" }, "\u0E15\u0E31\u0E27\u0E40\u0E21\u0E35\u0E22"))), /* @__PURE__ */ React.createElement(Field, { label: "\u0E27\u0E31\u0E19\u0E25\u0E07\u0E1B\u0E39" }, /* @__PURE__ */ React.createElement("input", { type: "date", style: inputStyle, value: f.stockDate || "", onChange: (e) => set("stockDate", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E1B\u0E31\u0E08\u0E08\u0E38\u0E1A\u0E31\u0E19 (\u0E01\u0E23\u0E31\u0E21)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: f.currentWeight, onChange: (e) => set("currentWeight", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22 (\u0E01\u0E23\u0E31\u0E21)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: f.targetWeight, onChange: (e) => set("targetWeight", e.target.value) })), f.sex === "female" && /* @__PURE__ */ React.createElement(Field, { label: "\u0E44\u0E02\u0E48 (%)" }, /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "100", style: inputStyle, value: f.eggPercent, onChange: (e) => set("eggPercent", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E1B\u0E23\u0E34\u0E21\u0E32\u0E13\u0E2D\u0E32\u0E2B\u0E32\u0E23/\u0E27\u0E31\u0E19 (\u0E01\u0E23\u0E31\u0E21)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: f.feedPerDay, onChange: (e) => set("feedPerDay", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E15\u0E49\u0E19\u0E17\u0E38\u0E19\u0E17\u0E35\u0E48\u0E23\u0E31\u0E1A\u0E21\u0E32 (\u0E1A\u0E32\u0E17/\u0E15\u0E31\u0E27)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: f.costPerCrab, onChange: (e) => set("costPerCrab", e.target.value) }))), !restock && !isNew && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 4, marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: C.brine, marginBottom: 6 } }, "\u0E1B\u0E23\u0E30\u0E27\u0E31\u0E15\u0E34\u0E01\u0E32\u0E23\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 } }, (f.moltHistory || []).length === 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: C.muted } }, "\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01"), (f.moltHistory || []).map((d, i) => /* @__PURE__ */ React.createElement("span", { key: i, style: { fontFamily: MONO, fontSize: 11.5, background: "#E4E9E2", padding: "3px 8px", borderRadius: 20 } }, fmtDate(d)))), /* @__PURE__ */ React.createElement(Btn, { size: "sm", tone: "ghost", onClick: addMoltToday }, "+ \u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A\u0E27\u0E31\u0E19\u0E19\u0E35\u0E49")), /* @__PURE__ */ React.createElement(Field, { label: "\u0E2B\u0E21\u0E32\u0E22\u0E40\u0E2B\u0E15\u0E38" }, /* @__PURE__ */ React.createElement("textarea", { style: { ...inputStyle, minHeight: 60, resize: "vertical" }, value: f.notes, onChange: (e) => set("notes", e.target.value) })), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginTop: 18 } }, /* @__PURE__ */ React.createElement("div", null, !isNew && !restock && onDelete && /* @__PURE__ */ React.createElement(Btn, { tone: "danger", onClick: () => {
+    if (confirm("\u0E25\u0E1A\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E19\u0E35\u0E49\u0E2D\u0E2D\u0E01\u0E08\u0E32\u0E01\u0E23\u0E30\u0E1A\u0E1A?")) onDelete(f.id);
+  } }, "\u0E25\u0E1A\u0E01\u0E25\u0E48\u0E2D\u0E07")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", onClick: onClose }, "\u0E22\u0E01\u0E40\u0E25\u0E34\u0E01"), /* @__PURE__ */ React.createElement(Btn, { tone: "seagrass", onClick: submit }, restock ? "\u0E25\u0E07\u0E1B\u0E39\u0E43\u0E2B\u0E21\u0E48" : isNew ? "\u0E40\u0E1E\u0E34\u0E48\u0E21\u0E01\u0E25\u0E48\u0E2D\u0E07" : "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01"))));
+}
+function HarvestModal({ box, onConfirm, onClose }) {
+  const [d, setD] = useState({
+    harvestDate: todayStr(),
+    weight: box.currentWeight || "",
+    eggPercent: box.eggPercent || 0,
+    sellPricePerCrab: ""
+  });
+  const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
+  const profit = d.sellPricePerCrab !== "" && box.costPerCrab !== "" && !isNaN(d.sellPricePerCrab) && !isNaN(box.costPerCrab) ? Number(d.sellPricePerCrab) - Number(box.costPerCrab) : null;
+  return /* @__PURE__ */ React.createElement(Modal, { title: `\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E08\u0E31\u0E1A\u0E1B\u0E39 \u2014 \u0E01\u0E25\u0E48\u0E2D\u0E07 #${box.boxNumber}`, onClose }, /* @__PURE__ */ React.createElement(Field, { label: "\u0E27\u0E31\u0E19\u0E08\u0E31\u0E1A" }, /* @__PURE__ */ React.createElement("input", { type: "date", style: inputStyle, value: d.harvestDate, onChange: (e) => set("harvestDate", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E15\u0E2D\u0E19\u0E08\u0E31\u0E1A (\u0E01\u0E23\u0E31\u0E21)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: d.weight, onChange: (e) => set("weight", e.target.value) })), box.sex === "female" && /* @__PURE__ */ React.createElement(Field, { label: "\u0E44\u0E02\u0E48\u0E15\u0E2D\u0E19\u0E08\u0E31\u0E1A (%)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: d.eggPercent, onChange: (e) => set("eggPercent", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E23\u0E32\u0E04\u0E32\u0E08\u0E33\u0E2B\u0E19\u0E48\u0E32\u0E22 (\u0E1A\u0E32\u0E17/\u0E15\u0E31\u0E27)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: d.sellPricePerCrab, onChange: (e) => set("sellPricePerCrab", e.target.value) })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: C.muted, marginBottom: 14 } }, "\u0E15\u0E49\u0E19\u0E17\u0E38\u0E19\u0E17\u0E35\u0E48\u0E23\u0E31\u0E1A\u0E21\u0E32: ", /* @__PURE__ */ React.createElement("b", { style: { fontFamily: MONO, color: C.text } }, money(box.costPerCrab), " \u0E1A\u0E32\u0E17/\u0E15\u0E31\u0E27"), profit !== null && /* @__PURE__ */ React.createElement("span", { style: { marginLeft: 10 } }, "\u0E01\u0E33\u0E44\u0E23\u0E42\u0E14\u0E22\u0E1B\u0E23\u0E30\u0E21\u0E32\u0E13: ", /* @__PURE__ */ React.createElement("b", { style: { fontFamily: MONO, color: profit >= 0 ? C.seagrass : C.coral } }, money(profit), " \u0E1A\u0E32\u0E17/\u0E15\u0E31\u0E27"))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", gap: 8 } }, /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", onClick: onClose }, "\u0E22\u0E01\u0E40\u0E25\u0E34\u0E01"), /* @__PURE__ */ React.createElement(Btn, { tone: "coral", onClick: () => onConfirm(d) }, "\u0E22\u0E37\u0E19\u0E22\u0E31\u0E19\u0E01\u0E32\u0E23\u0E08\u0E31\u0E1A\u0E1B\u0E39")));
+}
+function WaterTab({ waterLogs, settings, onAddLog, onUpdateSettings }) {
+  const params = settings.parameters;
+  const [readings, setReadings] = useState(() => Object.fromEntries(params.map((p) => [p.key, ""])));
+  const [notes, setNotes] = useState("");
+  const [when, setWhen] = useState(() => (/* @__PURE__ */ new Date()).toISOString().slice(0, 16));
+  const latest = waterLogs.length ? waterLogs[waterLogs.length - 1] : null;
+  const submit = () => {
+    const clean = {};
+    let any = false;
+    params.forEach((p) => {
+      if (readings[p.key] !== "" && !isNaN(readings[p.key])) {
+        clean[p.key] = Number(readings[p.key]);
+        any = true;
+      }
+    });
+    if (!any) {
+      alert("\u0E01\u0E23\u0E2D\u0E01\u0E04\u0E48\u0E32\u0E2D\u0E22\u0E48\u0E32\u0E07\u0E19\u0E49\u0E2D\u0E22 1 \u0E1E\u0E32\u0E23\u0E32\u0E21\u0E34\u0E40\u0E15\u0E2D\u0E23\u0E4C");
+      return;
+    }
+    onAddLog({ id: uid(), datetime: when, readings: clean, notes });
+    setReadings(Object.fromEntries(params.map((p) => [p.key, ""])));
+    setNotes("");
+  };
+  const dosing = useMemo(() => {
+    if (!latest) return [];
+    return params.filter((p) => p.dosable && p.doseFactor > 0).map((p) => {
+      const cur = latest.readings[p.key];
+      if (cur === void 0) return null;
+      const diff = p.target - cur;
+      if (Math.abs(diff) < 1e-3) return null;
+      const need = diff * settings.tankVolumeLiters * p.doseFactor;
+      return { param: p, cur, diff, need };
+    }).filter(Boolean);
+  }, [latest, params, settings.tankVolumeLiters]);
+  const trend = (key) => waterLogs.slice(-10).map((l) => l.readings[key]).filter((v) => v !== void 0);
+  return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "380px 1fr", gap: 20, alignItems: "start" } }, /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33\u0E27\u0E31\u0E19\u0E19\u0E35\u0E49"), /* @__PURE__ */ React.createElement(Field, { label: "\u0E27\u0E31\u0E19\u0E40\u0E27\u0E25\u0E32" }, /* @__PURE__ */ React.createElement("input", { type: "datetime-local", style: inputStyle, value: when, onChange: (e) => setWhen(e.target.value) })), params.map((p) => /* @__PURE__ */ React.createElement(Field, { key: p.key, label: `${p.label}${p.unit ? ` (${p.unit})` : ""}`, hint: `\u0E0A\u0E48\u0E27\u0E07\u0E1B\u0E01\u0E15\u0E34 ${p.min}\u2013${p.max}${p.unit}` }, /* @__PURE__ */ React.createElement("input", { type: "number", step: "any", style: inputStyle, value: readings[p.key], onChange: (e) => setReadings((r) => ({ ...r, [p.key]: e.target.value })) }))), /* @__PURE__ */ React.createElement(Field, { label: "\u0E2B\u0E21\u0E32\u0E22\u0E40\u0E2B\u0E15\u0E38" }, /* @__PURE__ */ React.createElement("textarea", { style: { ...inputStyle, minHeight: 50 }, value: notes, onChange: (e) => setNotes(e.target.value) })), /* @__PURE__ */ React.createElement(Btn, { tone: "seagrass", onClick: submit }, "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 20 } }, /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: latest ? `\u0E2D\u0E31\u0E1B\u0E40\u0E14\u0E15\u0E25\u0E48\u0E32\u0E2A\u0E38\u0E14 ${fmtDate(latest.datetime)}` : "\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25" }, "\u0E2A\u0E16\u0E32\u0E19\u0E30\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33"), !latest && /* @__PURE__ */ React.createElement("div", { style: { color: C.muted, fontSize: 13 } }, "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33\u0E04\u0E23\u0E31\u0E49\u0E07\u0E41\u0E23\u0E01\u0E40\u0E1E\u0E37\u0E48\u0E2D\u0E40\u0E23\u0E34\u0E48\u0E21\u0E15\u0E34\u0E14\u0E15\u0E32\u0E21"), latest && /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 24px" } }, params.map((p) => {
+    var _a;
+    return /* @__PURE__ */ React.createElement(GaugeBar, { key: p.key, param: p, value: (_a = latest.readings[p.key]) != null ? _a : null });
+  }))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E04\u0E33\u0E19\u0E27\u0E13\u0E1B\u0E23\u0E34\u0E21\u0E32\u0E13\u0E2A\u0E32\u0E23\u0E17\u0E35\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E40\u0E15\u0E34\u0E21 (\u0E42\u0E14\u0E22\u0E1B\u0E23\u0E30\u0E21\u0E32\u0E13)"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "\u0E04\u0E33\u0E19\u0E27\u0E13\u0E08\u0E32\u0E01\u0E1B\u0E23\u0E34\u0E21\u0E32\u0E15\u0E23\u0E19\u0E49\u0E33 ", num(settings.tankVolumeLiters), " \u0E25\u0E34\u0E15\u0E23 \u0E41\u0E25\u0E30\u0E04\u0E48\u0E32\u0E04\u0E39\u0E13\u0E42\u0E14\u0E2A\u0E17\u0E35\u0E48\u0E15\u0E31\u0E49\u0E07\u0E44\u0E27\u0E49 \u2014 \u0E04\u0E27\u0E23\u0E1B\u0E23\u0E31\u0E1A\u0E04\u0E48\u0E32\u0E04\u0E39\u0E13\u0E43\u0E2B\u0E49\u0E15\u0E23\u0E07\u0E01\u0E31\u0E1A\u0E1C\u0E25\u0E34\u0E15\u0E20\u0E31\u0E13\u0E11\u0E4C\u0E08\u0E23\u0E34\u0E07\u0E17\u0E35\u0E48\u0E43\u0E0A\u0E49\u0E43\u0E19\u0E2B\u0E19\u0E49\u0E32\u0E15\u0E31\u0E49\u0E07\u0E04\u0E48\u0E32"), dosing.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: C.muted } }, "\u0E44\u0E21\u0E48\u0E21\u0E35\u0E04\u0E48\u0E32\u0E17\u0E35\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E1B\u0E23\u0E31\u0E1A\u0E15\u0E2D\u0E19\u0E19\u0E35\u0E49 \u0E2B\u0E23\u0E37\u0E2D\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E44\u0E14\u0E49\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33"), dosing.map(({ param, cur, diff, need }) => /* @__PURE__ */ React.createElement("div", { key: param.key, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${C.line}` } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 13.5 } }, param.label), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: C.muted } }, "\u0E1B\u0E31\u0E08\u0E08\u0E38\u0E1A\u0E31\u0E19 ", cur, param.unit, " \u2192 \u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22 ", param.target, param.unit)), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: MONO, fontWeight: 700, color: diff > 0 ? C.water : C.amber } }, diff > 0 ? "+" : "", num(need, 2)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10.5, color: C.muted } }, param.doseUnit))))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E41\u0E19\u0E27\u0E42\u0E19\u0E49\u0E21 (10 \u0E04\u0E23\u0E31\u0E49\u0E07\u0E25\u0E48\u0E32\u0E2A\u0E38\u0E14)"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 } }, params.map((p) => /* @__PURE__ */ React.createElement("div", { key: p.key }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, marginBottom: 2 } }, p.label), /* @__PURE__ */ React.createElement(Sparkline, { values: trend(p.key), min: p.min, max: p.max, color: C.water }))))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E1B\u0E23\u0E30\u0E27\u0E31\u0E15\u0E34\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33"), /* @__PURE__ */ React.createElement("div", { style: { maxHeight: 260, overflowY: "auto" } }, /* @__PURE__ */ React.createElement("table", { style: tableStyle }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E27\u0E31\u0E19\u0E40\u0E27\u0E25\u0E32"), params.map((p) => /* @__PURE__ */ React.createElement("th", { key: p.key, style: thStyle }, p.label)), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E2B\u0E21\u0E32\u0E22\u0E40\u0E2B\u0E15\u0E38"))), /* @__PURE__ */ React.createElement("tbody", null, [...waterLogs].reverse().map((l) => /* @__PURE__ */ React.createElement("tr", { key: l.id }, /* @__PURE__ */ React.createElement("td", { style: tdStyle }, fmtDate(l.datetime)), params.map((p) => {
+    var _a;
+    return /* @__PURE__ */ React.createElement("td", { key: p.key, style: { ...tdStyle, fontFamily: MONO } }, (_a = l.readings[p.key]) != null ? _a : "\u2014");
+  }), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, l.notes || "\u2014"))), waterLogs.length === 0 && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { style: tdStyle, colSpan: params.length + 2 }, "\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25"))))))));
+}
+function SectionTitle({ children, sub }) {
+  return /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: DISPLAY, fontWeight: 700, fontSize: 16, color: C.ink } }, children), sub && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: C.muted, marginTop: 1 } }, sub));
+}
+const cardStyle = { background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: 18 };
+const tableStyle = { width: "100%", borderCollapse: "collapse", fontSize: 12.5 };
+const thStyle = { textAlign: "left", padding: "6px 8px", color: C.muted, fontWeight: 700, fontSize: 11, borderBottom: `1px solid ${C.line}`, whiteSpace: "nowrap" };
+const tdStyle = { padding: "6px 8px", borderBottom: `1px solid ${C.line}`, whiteSpace: "nowrap" };
+function FeedTab({ boxes, settings, onUpdateBox, onUpdateSettings }) {
+  const active = boxes.filter((b) => b.status === "active" && b.currentWeight);
+  const totalBiomass = active.reduce((s, b) => s + Number(b.currentWeight || 0), 0);
+  const [rate, setRate] = useState(settings.feedRatePercent);
+  const recommended = totalBiomass * rate / 100;
+  return /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "320px 1fr", gap: 20, alignItems: "start" } }, /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E04\u0E33\u0E19\u0E27\u0E13\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E23\u0E27\u0E21"), /* @__PURE__ */ React.createElement(Field, { label: "\u0E2D\u0E31\u0E15\u0E23\u0E32\u0E01\u0E32\u0E23\u0E43\u0E2B\u0E49\u0E2D\u0E32\u0E2B\u0E32\u0E23 (% \u0E02\u0E2D\u0E07\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E15\u0E31\u0E27/\u0E27\u0E31\u0E19)", hint: "\u0E04\u0E48\u0E32\u0E17\u0E31\u0E48\u0E27\u0E44\u0E1B\u0E2A\u0E33\u0E2B\u0E23\u0E31\u0E1A\u0E1B\u0E39\u0E14\u0E33\u0E02\u0E38\u0E19\u0E2D\u0E22\u0E39\u0E48\u0E17\u0E35\u0E48\u0E1B\u0E23\u0E30\u0E21\u0E32\u0E13 3\u20135% \u0E1B\u0E23\u0E31\u0E1A\u0E15\u0E32\u0E21\u0E0A\u0E19\u0E34\u0E14\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E41\u0E25\u0E30\u0E2D\u0E38\u0E13\u0E2B\u0E20\u0E39\u0E21\u0E34\u0E19\u0E49\u0E33" }, /* @__PURE__ */ React.createElement("input", { type: "number", step: "0.1", style: inputStyle, value: rate, onChange: (e) => setRate(e.target.value) })), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 4 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.muted } }, "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E23\u0E27\u0E21\u0E1B\u0E39\u0E17\u0E35\u0E48\u0E21\u0E35\u0E0A\u0E35\u0E27\u0E34\u0E15\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14"), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: MONO, fontSize: 22, fontWeight: 700, color: C.ink } }, num(totalBiomass), " g")), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.muted } }, "\u0E1B\u0E23\u0E34\u0E21\u0E32\u0E13\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E41\u0E19\u0E30\u0E19\u0E33/\u0E27\u0E31\u0E19"), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: MONO, fontSize: 26, fontWeight: 700, color: C.seagrass } }, num(recommended), " g")), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 14 } }, /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", onClick: () => onUpdateSettings({ ...settings, feedRatePercent: Number(rate) }) }, "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E2D\u0E31\u0E15\u0E23\u0E32\u0E19\u0E35\u0E49\u0E40\u0E1B\u0E47\u0E19\u0E04\u0E48\u0E32\u0E40\u0E23\u0E34\u0E48\u0E21\u0E15\u0E49\u0E19"))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: `${active.length} \u0E01\u0E25\u0E48\u0E2D\u0E07\u0E17\u0E35\u0E48\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07\u0E2D\u0E22\u0E39\u0E48` }, "\u0E1B\u0E23\u0E34\u0E21\u0E32\u0E13\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E23\u0E32\u0E22\u0E01\u0E25\u0E48\u0E2D\u0E07"), /* @__PURE__ */ React.createElement("table", { style: tableStyle }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E01\u0E25\u0E48\u0E2D\u0E07"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01 (g)"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E41\u0E19\u0E30\u0E19\u0E33 (g/\u0E27\u0E31\u0E19)"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E15\u0E31\u0E49\u0E07\u0E44\u0E27\u0E49\u0E08\u0E23\u0E34\u0E07 (g/\u0E27\u0E31\u0E19)"), /* @__PURE__ */ React.createElement("th", { style: thStyle }))), /* @__PURE__ */ React.createElement("tbody", null, active.map((b) => {
+    const suggested = Number(b.currentWeight || 0) * rate / 100;
+    return /* @__PURE__ */ React.createElement("tr", { key: b.id }, /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO, fontWeight: 700 } }, "#", b.boxNumber), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO } }, num(b.currentWeight)), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO, color: C.water } }, num(suggested, 1)), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO } }, b.feedPerDay || "\u2014"), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement(Btn, { size: "sm", tone: "ghost", onClick: () => onUpdateBox({ ...b, feedPerDay: suggested.toFixed(1) }) }, "\u0E43\u0E0A\u0E49\u0E04\u0E48\u0E32\u0E19\u0E35\u0E49")));
+  }), active.length === 0 && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { style: tdStyle, colSpan: 5 }, "\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E17\u0E35\u0E48\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07\u0E1B\u0E39"))))));
+}
+function HistoryTab({ history }) {
+  const [filter, setFilter] = useState("all");
+  const boxNumbers = useMemo(() => [...new Set(history.map((h) => h.boxNumber))].sort(), [history]);
+  const rows = filter === "all" ? history : history.filter((h) => h.boxNumber === filter);
+  const sorted = [...rows].sort((a, b) => new Date(b.harvestDate) - new Date(a.harvestDate));
+  const totals = rows.reduce(
+    (acc, r) => {
+      acc.cost += Number(r.costPerCrab || 0);
+      acc.sell += Number(r.sellPricePerCrab || 0);
+      acc.profit += Number(r.profit || 0);
+      acc.count += 1;
+      return acc;
+    },
+    { cost: 0, sell: 0, profit: 0, count: 0 }
+  );
+  return /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 18 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 14, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E08\u0E33\u0E19\u0E27\u0E19\u0E23\u0E38\u0E48\u0E19\u0E17\u0E35\u0E48\u0E08\u0E31\u0E1A\u0E41\u0E25\u0E49\u0E27", value: totals.count }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E15\u0E49\u0E19\u0E17\u0E38\u0E19\u0E23\u0E27\u0E21", value: `${money(totals.cost)} \u0E1A.` }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E22\u0E2D\u0E14\u0E02\u0E32\u0E22\u0E23\u0E27\u0E21", value: `${money(totals.sell)} \u0E1A.`, tone: "water" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E33\u0E44\u0E23\u0E23\u0E27\u0E21", value: `${money(totals.profit)} \u0E1A.`, tone: totals.profit >= 0 ? "seagrass" : "coral" })), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E1B\u0E23\u0E30\u0E27\u0E31\u0E15\u0E34\u0E01\u0E32\u0E23\u0E08\u0E31\u0E1A\u0E1B\u0E39\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14"), /* @__PURE__ */ React.createElement("select", { style: { ...inputStyle, width: 180 }, value: filter, onChange: (e) => setFilter(e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "\u0E17\u0E38\u0E01\u0E01\u0E25\u0E48\u0E2D\u0E07"), boxNumbers.map((n) => /* @__PURE__ */ React.createElement("option", { key: n, value: n }, "\u0E01\u0E25\u0E48\u0E2D\u0E07 #", n)))), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { style: tableStyle }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E01\u0E25\u0E48\u0E2D\u0E07"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E23\u0E38\u0E48\u0E19\u0E17\u0E35\u0E48"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E40\u0E1E\u0E28"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E27\u0E31\u0E19\u0E25\u0E07\u0E1B\u0E39"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E27\u0E31\u0E19\u0E08\u0E31\u0E1A"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E08\u0E33\u0E19\u0E27\u0E19\u0E27\u0E31\u0E19"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01 (g)"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E44\u0E02\u0E48 %"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E15\u0E49\u0E19\u0E17\u0E38\u0E19/\u0E15\u0E31\u0E27"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E23\u0E32\u0E04\u0E32\u0E02\u0E32\u0E22/\u0E15\u0E31\u0E27"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E01\u0E33\u0E44\u0E23/\u0E15\u0E31\u0E27"))), /* @__PURE__ */ React.createElement("tbody", null, sorted.map((r) => {
+    var _a;
+    return /* @__PURE__ */ React.createElement("tr", { key: r.id }, /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO, fontWeight: 700 } }, "#", r.boxNumber), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, r.batchNumber), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, r.sex === "female" ? "\u2640" : "\u2642"), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, fmtDate(r.stockDate)), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, fmtDate(r.harvestDate)), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO } }, (_a = r.daysGrown) != null ? _a : "\u2014"), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO } }, num(r.weight)), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO } }, r.sex === "female" ? num(r.eggPercent) : "\u2014"), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO } }, money(r.costPerCrab)), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO } }, money(r.sellPricePerCrab)), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO, color: r.profit >= 0 ? C.seagrass : C.coral, fontWeight: 700 } }, money(r.profit)));
+  }), sorted.length === 0 && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { style: tdStyle, colSpan: 11 }, "\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E1B\u0E23\u0E30\u0E27\u0E31\u0E15\u0E34\u0E01\u0E32\u0E23\u0E08\u0E31\u0E1A\u0E1B\u0E39")))))));
+}
+function StatCard({ label, value, tone = "ink" }) {
+  const colors = { ink: C.ink, water: C.water, seagrass: C.seagrass, coral: C.coral, amber: C.amber };
+  return /* @__PURE__ */ React.createElement("div", { style: { ...cardStyle, flex: "1 1 160px", minWidth: 160, padding: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: C.muted, fontWeight: 700, marginBottom: 6 } }, label), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: MONO, fontSize: 24, fontWeight: 700, color: colors[tone] || C.ink } }, value));
+}
+function DataManagementCard({ onExport, onImport, onResetAll, counts }) {
+  const fileRef = React.useRef(null);
+  return /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E08\u0E30\u0E16\u0E39\u0E01\u0E40\u0E01\u0E47\u0E1A\u0E44\u0E27\u0E49\u0E43\u0E19\u0E40\u0E04\u0E23\u0E37\u0E48\u0E2D\u0E07/\u0E40\u0E1A\u0E23\u0E32\u0E27\u0E4C\u0E40\u0E0B\u0E2D\u0E23\u0E4C\u0E19\u0E35\u0E49\u0E40\u0E2A\u0E21\u0E2D \u0E08\u0E19\u0E01\u0E27\u0E48\u0E32\u0E04\u0E38\u0E13\u0E08\u0E30\u0E25\u0E1A\u0E40\u0E2D\u0E07 \u2014 \u0E2A\u0E33\u0E23\u0E2D\u0E07\u0E2B\u0E23\u0E37\u0E2D\u0E22\u0E49\u0E32\u0E22\u0E40\u0E04\u0E23\u0E37\u0E48\u0E2D\u0E07\u0E44\u0E14\u0E49\u0E14\u0E49\u0E27\u0E22\u0E44\u0E1F\u0E25\u0E4C\u0E2A\u0E33\u0E23\u0E2D\u0E07\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25" }, "\u0E2A\u0E33\u0E23\u0E2D\u0E07 / \u0E22\u0E49\u0E32\u0E22\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: C.muted, marginBottom: 14 } }, "\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14 ", counts.boxes, " \xB7 \u0E1B\u0E23\u0E30\u0E27\u0E31\u0E15\u0E34\u0E01\u0E32\u0E23\u0E08\u0E31\u0E1A ", counts.history, " \u0E23\u0E32\u0E22\u0E01\u0E32\u0E23 \xB7 \u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33 ", counts.water, " \u0E04\u0E23\u0E31\u0E49\u0E07"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 } }, /* @__PURE__ */ React.createElement(Btn, { tone: "seagrass", onClick: onExport }, "\u0E14\u0E32\u0E27\u0E19\u0E4C\u0E42\u0E2B\u0E25\u0E14\u0E44\u0E1F\u0E25\u0E4C\u0E2A\u0E33\u0E23\u0E2D\u0E07\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25 (.json)"), /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", onClick: () => {
+    var _a;
+    return (_a = fileRef.current) == null ? void 0 : _a.click();
+  } }, "\u0E19\u0E33\u0E40\u0E02\u0E49\u0E32\u0E44\u0E1F\u0E25\u0E4C\u0E2A\u0E33\u0E23\u0E2D\u0E07\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25"), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      ref: fileRef,
+      type: "file",
+      accept: "application/json",
+      style: { display: "none" },
+      onChange: (e) => {
+        var _a;
+        const file = (_a = e.target.files) == null ? void 0 : _a[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const data = JSON.parse(reader.result);
+            onImport(data);
+          } catch {
+            alert("\u0E44\u0E1F\u0E25\u0E4C\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07 \u0E44\u0E21\u0E48\u0E2A\u0E32\u0E21\u0E32\u0E23\u0E16\u0E19\u0E33\u0E40\u0E02\u0E49\u0E32\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E44\u0E14\u0E49");
+          }
+        };
+        reader.readAsText(file);
+        e.target.value = "";
+      }
+    }
+  )), /* @__PURE__ */ React.createElement("div", { style: { borderTop: `1px solid ${C.line}`, paddingTop: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: C.coral, marginBottom: 8 } }, "\u0E25\u0E49\u0E32\u0E07\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "\u0E25\u0E1A\u0E01\u0E25\u0E48\u0E2D\u0E07 \u0E1B\u0E23\u0E30\u0E27\u0E31\u0E15\u0E34\u0E01\u0E32\u0E23\u0E08\u0E31\u0E1A \u0E04\u0E48\u0E32\u0E19\u0E49\u0E33 \u0E41\u0E25\u0E30\u0E01\u0E32\u0E23\u0E15\u0E31\u0E49\u0E07\u0E04\u0E48\u0E32\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14\u0E2D\u0E2D\u0E01\u0E08\u0E32\u0E01\u0E40\u0E04\u0E23\u0E37\u0E48\u0E2D\u0E07\u0E19\u0E35\u0E49 \u0E44\u0E21\u0E48\u0E2A\u0E32\u0E21\u0E32\u0E23\u0E16\u0E01\u0E39\u0E49\u0E04\u0E37\u0E19\u0E44\u0E14\u0E49\u0E40\u0E27\u0E49\u0E19\u0E41\u0E15\u0E48\u0E21\u0E35\u0E44\u0E1F\u0E25\u0E4C\u0E2A\u0E33\u0E23\u0E2D\u0E07\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25"), /* @__PURE__ */ React.createElement(Btn, { tone: "danger", onClick: onResetAll }, "\u0E25\u0E1A\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14")));
+}
+function SettingsTab({ settings, onSave, onExport, onImport, onResetAll, counts }) {
+  const [s, setS] = useState(settings);
+  const setParam = (i, key, val) => {
+    const params = [...s.parameters];
+    params[i] = { ...params[i], [key]: val };
+    setS({ ...s, parameters: params });
+  };
+  return /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 18, maxWidth: 760 } }, /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E01\u0E33\u0E2B\u0E19\u0E14\u0E41\u0E16\u0E27\u0E41\u0E25\u0E30\u0E08\u0E33\u0E19\u0E27\u0E19\u0E0A\u0E48\u0E2D\u0E07\u0E15\u0E48\u0E2D\u0E41\u0E16\u0E27 \u0E43\u0E2B\u0E49\u0E15\u0E23\u0E07\u0E01\u0E31\u0E1A\u0E1C\u0E31\u0E07\u0E04\u0E2D\u0E19\u0E42\u0E14\u0E08\u0E23\u0E34\u0E07\u0E43\u0E19\u0E1F\u0E32\u0E23\u0E4C\u0E21 \u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E15\u0E49\u0E2D\u0E07\u0E2D\u0E22\u0E39\u0E48\u0E43\u0E19\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A \u0E15\u0E31\u0E27\u0E2D\u0E31\u0E01\u0E29\u0E23\u0E41\u0E16\u0E27 + \u0E40\u0E25\u0E02\u0E0A\u0E48\u0E2D\u0E07 \u0E40\u0E0A\u0E48\u0E19 A01, B03" }, "\u0E1C\u0E31\u0E07\u0E04\u0E2D\u0E19\u0E42\u0E14"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "2fr 1fr", gap: "0 16px" } }, /* @__PURE__ */ React.createElement(Field, { label: "\u0E41\u0E16\u0E27 (\u0E04\u0E31\u0E48\u0E19\u0E14\u0E49\u0E27\u0E22\u0E08\u0E38\u0E25\u0E20\u0E32\u0E04)", hint: "\u0E40\u0E0A\u0E48\u0E19 A,B,C,D" }, /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      style: inputStyle,
+      value: (s.layoutRows || []).join(","),
+      onChange: (e) => setS({
+        ...s,
+        layoutRows: e.target.value.split(",").map((x) => x.trim().toUpperCase()).filter(Boolean)
+      })
+    }
+  )), /* @__PURE__ */ React.createElement(Field, { label: "\u0E08\u0E33\u0E19\u0E27\u0E19\u0E0A\u0E48\u0E2D\u0E07\u0E15\u0E48\u0E2D\u0E41\u0E16\u0E27" }, /* @__PURE__ */ React.createElement("input", { type: "number", min: "1", style: inputStyle, value: s.layoutSlotsPerRow, onChange: (e) => setS({ ...s, layoutSlotsPerRow: Number(e.target.value) }) })))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E04\u0E48\u0E32\u0E17\u0E31\u0E48\u0E27\u0E44\u0E1B\u0E02\u0E2D\u0E07\u0E23\u0E30\u0E1A\u0E1A"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0 16px" } }, /* @__PURE__ */ React.createElement(Field, { label: "\u0E1B\u0E23\u0E34\u0E21\u0E32\u0E15\u0E23\u0E19\u0E49\u0E33\u0E43\u0E19\u0E23\u0E30\u0E1A\u0E1A (\u0E25\u0E34\u0E15\u0E23)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: s.tankVolumeLiters, onChange: (e) => setS({ ...s, tankVolumeLiters: Number(e.target.value) }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E2D\u0E31\u0E15\u0E23\u0E32\u0E01\u0E32\u0E23\u0E43\u0E2B\u0E49\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E40\u0E23\u0E34\u0E48\u0E21\u0E15\u0E49\u0E19 (%)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: s.feedRatePercent, onChange: (e) => setS({ ...s, feedRatePercent: Number(e.target.value) }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E40\u0E15\u0E37\u0E2D\u0E19\u0E15\u0E23\u0E27\u0E08\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A\u0E2B\u0E32\u0E01\u0E40\u0E01\u0E34\u0E19 (\u0E27\u0E31\u0E19)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: s.moltReminderDays, onChange: (e) => setS({ ...s, moltReminderDays: Number(e.target.value) }) })))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E1B\u0E23\u0E31\u0E1A\u0E0A\u0E48\u0E27\u0E07\u0E04\u0E48\u0E32\u0E1B\u0E01\u0E15\u0E34\u0E41\u0E25\u0E30\u0E15\u0E31\u0E27\u0E04\u0E39\u0E13\u0E04\u0E33\u0E19\u0E27\u0E13\u0E42\u0E14\u0E2A\u0E43\u0E2B\u0E49\u0E15\u0E23\u0E07\u0E01\u0E31\u0E1A\u0E1C\u0E25\u0E34\u0E15\u0E20\u0E31\u0E13\u0E11\u0E4C\u0E08\u0E23\u0E34\u0E07\u0E17\u0E35\u0E48\u0E43\u0E0A\u0E49\u0E43\u0E19\u0E1F\u0E32\u0E23\u0E4C\u0E21" }, "\u0E1E\u0E32\u0E23\u0E32\u0E21\u0E34\u0E40\u0E15\u0E2D\u0E23\u0E4C\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33"), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { style: tableStyle }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E1E\u0E32\u0E23\u0E32\u0E21\u0E34\u0E40\u0E15\u0E2D\u0E23\u0E4C"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E2B\u0E19\u0E48\u0E27\u0E22"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E15\u0E48\u0E33\u0E2A\u0E38\u0E14"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E2A\u0E39\u0E07\u0E2A\u0E38\u0E14"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E15\u0E31\u0E27\u0E04\u0E39\u0E13\u0E42\u0E14\u0E2A"))), /* @__PURE__ */ React.createElement("tbody", null, s.parameters.map((p, i) => /* @__PURE__ */ React.createElement("tr", { key: p.key }, /* @__PURE__ */ React.createElement("td", { style: tdStyle }, p.label), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, p.unit || "\u2014"), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 70 }, value: p.min, onChange: (e) => setParam(i, "min", Number(e.target.value)) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 70 }, value: p.target, onChange: (e) => setParam(i, "target", Number(e.target.value)) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 70 }, value: p.max, onChange: (e) => setParam(i, "max", Number(e.target.value)) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, p.dosable ? /* @__PURE__ */ React.createElement("input", { type: "number", step: "0.001", style: { ...inputStyle, width: 80 }, value: p.doseFactor, onChange: (e) => setParam(i, "doseFactor", Number(e.target.value)) }) : "\u2014"))))))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement(Btn, { tone: "seagrass", onClick: () => onSave(s) }, "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E01\u0E32\u0E23\u0E15\u0E31\u0E49\u0E07\u0E04\u0E48\u0E32")), /* @__PURE__ */ React.createElement(DataManagementCard, { onExport, onImport, onResetAll, counts }), /* @__PURE__ */ React.createElement(ChangePasswordCard, null));
+}
+const TABS = [
+  { id: "dashboard", label: "\u0E41\u0E14\u0E0A\u0E1A\u0E2D\u0E23\u0E4C\u0E14" },
+  { id: "boxes", label: "\u0E01\u0E25\u0E48\u0E2D\u0E07 / \u0E04\u0E2D\u0E19\u0E42\u0E14" },
+  { id: "water", label: "\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33" },
+  { id: "feed", label: "\u0E04\u0E33\u0E19\u0E27\u0E13\u0E2D\u0E32\u0E2B\u0E32\u0E23" },
+  { id: "history", label: "\u0E1B\u0E23\u0E30\u0E27\u0E31\u0E15\u0E34 / \u0E23\u0E32\u0E22\u0E07\u0E32\u0E19" },
+  { id: "settings", label: "\u0E15\u0E31\u0E49\u0E07\u0E04\u0E48\u0E32" }
+];
+function LoginGate({ onSuccess }) {
+  const [username, setUsername] = useState("");
+  const [pw, setPw] = useState("");
+  const [error, setError] = useState("");
+  const [checking, setChecking] = useState(false);
+  const submit = async () => {
+    setChecking(true);
+    setError("");
+    const real = await storeGetCredentials();
+    setChecking(false);
+    if (username === real.username && pw === real.password) {
+      onSuccess();
+    } else {
+      setError("\u0E22\u0E39\u0E2A\u0E40\u0E19\u0E21/\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07 \u0E25\u0E2D\u0E07\u0E2D\u0E35\u0E01\u0E04\u0E23\u0E31\u0E49\u0E07");
+    }
+  };
+  return /* @__PURE__ */ React.createElement("div", { style: { fontFamily: BODY, background: C.paper, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 } }, /* @__PURE__ */ React.createElement("link", { rel: "stylesheet", href: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" }), /* @__PURE__ */ React.createElement(
+    "div",
+    {
+      style: {
+        background: C.card,
+        borderRadius: 16,
+        padding: 32,
+        width: 360,
+        maxWidth: "94vw",
+        boxShadow: "0 20px 60px rgba(11,35,51,0.25)",
+        textAlign: "center"
+      }
+    },
+    /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "center", marginBottom: 14 } }, /* @__PURE__ */ React.createElement(LogoMark, { size: 56 })),
+    /* @__PURE__ */ React.createElement("div", { style: { fontFamily: DISPLAY, fontWeight: 700, fontSize: 19, color: C.ink, marginBottom: 4 } }, "\u0E2D\u0E31\u0E19\u0E14\u0E32\u0E21\u0E31\u0E19\u0E1F\u0E32\u0E23\u0E4C\u0E21"),
+    /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: C.muted, marginBottom: 20 } }, "\u0E01\u0E23\u0E2D\u0E01\u0E22\u0E39\u0E2A\u0E40\u0E19\u0E21\u0E41\u0E25\u0E30\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19\u0E40\u0E1E\u0E37\u0E48\u0E2D\u0E40\u0E02\u0E49\u0E32\u0E43\u0E0A\u0E49\u0E07\u0E32\u0E19"),
+    /* @__PURE__ */ React.createElement("input", {
+      type: "text",
+      autoFocus: true,
+      style: { ...inputStyle, textAlign: "center", fontSize: 16, marginBottom: 10 },
+      value: username,
+      placeholder: "\u0E22\u0E39\u0E2A\u0E40\u0E19\u0E21",
+      autoCapitalize: "off",
+      autoCorrect: "off",
+      onChange: (e) => setUsername(e.target.value),
+      onKeyDown: (e) => {
+        if (e.key === "Enter") submit();
+      }
+    }),
+    /* @__PURE__ */ React.createElement("input", {
+      type: "password",
+      style: { ...inputStyle, textAlign: "center", fontSize: 16, marginBottom: 10 },
+      value: pw,
+      placeholder: "\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19",
+      onChange: (e) => setPw(e.target.value),
+      onKeyDown: (e) => {
+        if (e.key === "Enter") submit();
+      }
+    }),
+    error && /* @__PURE__ */ React.createElement("div", { style: { color: C.coral, fontSize: 12.5, marginBottom: 10 } }, error),
+    /* @__PURE__ */ React.createElement(Btn, { tone: "coral", disabled: checking || !pw || !username, onClick: submit }, checking ? "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E15\u0E23\u0E27\u0E08\u0E2A\u0E2D\u0E1A\u2026" : "\u0E40\u0E02\u0E49\u0E32\u0E43\u0E0A\u0E49\u0E07\u0E32\u0E19")
+  ));
+}
+function ChangePasswordCard() {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!next || next.length < 4) {
+      alert("\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19\u0E43\u0E2B\u0E21\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E22\u0E32\u0E27\u0E2D\u0E22\u0E48\u0E32\u0E07\u0E19\u0E49\u0E2D\u0E22 4 \u0E15\u0E31\u0E27\u0E2D\u0E31\u0E01\u0E29\u0E23");
+      return;
+    }
+    if (next !== confirmPw) {
+      alert("\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19\u0E43\u0E2B\u0E21\u0E48\u0E17\u0E31\u0E49\u0E07\u0E2A\u0E2D\u0E07\u0E0A\u0E48\u0E2D\u0E07\u0E44\u0E21\u0E48\u0E15\u0E23\u0E07\u0E01\u0E31\u0E19");
+      return;
+    }
+    setBusy(true);
+    const real = await storeGetCredentials();
+    if (current !== real.password) {
+      setBusy(false);
+      alert("\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19\u0E1B\u0E31\u0E08\u0E08\u0E38\u0E1A\u0E31\u0E19\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07");
+      return;
+    }
+    await storeSetPassword(next);
+    setBusy(false);
+    setCurrent("");
+    setNext("");
+    setConfirmPw("");
+    alert("\u0E40\u0E1B\u0E25\u0E35\u0E48\u0E22\u0E19\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19\u0E2A\u0E33\u0E40\u0E23\u0E47\u0E08");
+  };
+  return /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19\u0E19\u0E35\u0E49\u0E43\u0E0A\u0E49\u0E23\u0E48\u0E27\u0E21\u0E01\u0E31\u0E19\u0E17\u0E31\u0E49\u0E07\u0E17\u0E35\u0E21 \u0E40\u0E1B\u0E25\u0E35\u0E48\u0E22\u0E19\u0E41\u0E25\u0E49\u0E27\u0E17\u0E38\u0E01\u0E04\u0E19\u0E15\u0E49\u0E2D\u0E07\u0E43\u0E0A\u0E49\u0E23\u0E2B\u0E31\u0E2A\u0E43\u0E2B\u0E21\u0E48" }, "\u0E40\u0E1B\u0E25\u0E35\u0E48\u0E22\u0E19\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19"), /* @__PURE__ */ React.createElement(Field, { label: "\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19\u0E1B\u0E31\u0E08\u0E08\u0E38\u0E1A\u0E31\u0E19" }, /* @__PURE__ */ React.createElement("input", { type: "password", style: inputStyle, value: current, onChange: (e) => setCurrent(e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19\u0E43\u0E2B\u0E21\u0E48" }, /* @__PURE__ */ React.createElement("input", { type: "password", style: inputStyle, value: next, onChange: (e) => setNext(e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E22\u0E37\u0E19\u0E22\u0E31\u0E19\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19\u0E43\u0E2B\u0E21\u0E48" }, /* @__PURE__ */ React.createElement("input", { type: "password", style: inputStyle, value: confirmPw, onChange: (e) => setConfirmPw(e.target.value) })), /* @__PURE__ */ React.createElement(Btn, { tone: "seagrass", disabled: busy, onClick: submit }, busy ? "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u2026" : "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E23\u0E2B\u0E31\u0E2A\u0E1C\u0E48\u0E32\u0E19\u0E43\u0E2B\u0E21\u0E48"));
+}
+function App() {
+  var _a;
+  const [loaded, setLoaded] = useState(false);
+  const [authOk, setAuthOk] = useState(false);
+  const [boxes, setBoxes] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [waterLogs, setWaterLogs] = useState([]);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [tab, setTab] = useState("dashboard");
+  const [openBox, setOpenBox] = useState(null);
+  const [showNewBox, setShowNewBox] = useState(false);
+  const [harvestTarget, setHarvestTarget] = useState(null);
+  const [showAlerts, setShowAlerts] = useState(false);
+  const [boxFilter, setBoxFilter] = useState({ status: "all", sex: "all", q: "" });
+  const [boxViewMode, setBoxViewMode] = useState("plan");
+  const [listPage, setListPage] = useState(0);
+  const LIST_PAGE_SIZE = 60;
+  useEffect(() => {
+    setListPage(0);
+  }, [boxFilter, boxViewMode]);
+  const [prefillBoxNumber, setPrefillBoxNumber] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    const timeoutId = setTimeout(() => {
+      if (!cancelled) {
+        console.error("crabfarm: load timed out, showing app with empty/partial data");
+        setLoaded(true);
+      }
+    }, 12e3);
+    (async () => {
+      try {
+        const [b, h, w, s] = await Promise.all([
+          storeGetCollection(COL_BOXES),
+          storeGetCollection(COL_HISTORY),
+          storeGetCollection(COL_WATER),
+          storeGetSettings()
+        ]);
+        if (cancelled) return;
+        setBoxes(b);
+        setHistory(h);
+        setWaterLogs(w);
+        setSettings(s && s.parameters ? { ...DEFAULT_SETTINGS, ...s, parameters: s.parameters } : DEFAULT_SETTINGS);
+      } catch (e) {
+        console.error("crabfarm: load failed", e);
+      } finally {
+        if (!cancelled) {
+          clearTimeout(timeoutId);
+          setLoaded(true);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, []);
+  const persistBoxes = useCallback((next, changedIds) => {
+    setBoxes(next);
+    storeSetCollection(COL_BOXES, next, changedIds);
+  }, []);
+  const persistHistory = useCallback((next, changedIds) => {
+    setHistory(next);
+    storeSetCollection(COL_HISTORY, next, changedIds);
+  }, []);
+  const persistWater = useCallback((next, changedIds) => {
+    setWaterLogs(next);
+    storeSetCollection(COL_WATER, next, changedIds);
+  }, []);
+  const persistSettings = useCallback((next) => {
+    setSettings(next);
+    storeSetSettings(next);
+  }, []);
+  const exportData = useCallback(() => {
+    const payload = {
+      app: "andaman-farm",
+      exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      boxes,
+      history,
+      waterLogs,
+      settings
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `andaman-farm-backup-${todayStr()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, [boxes, history, waterLogs, settings]);
+  const importData = useCallback((data) => {
+    if (!data || typeof data !== "object") {
+      alert("\u0E44\u0E1F\u0E25\u0E4C\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07");
+      return;
+    }
+    const ok = confirm("\u0E01\u0E32\u0E23\u0E19\u0E33\u0E40\u0E02\u0E49\u0E32\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E08\u0E30\u0E41\u0E17\u0E19\u0E17\u0E35\u0E48\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14\u0E43\u0E19\u0E40\u0E04\u0E23\u0E37\u0E48\u0E2D\u0E07\u0E19\u0E35\u0E49 \u0E15\u0E49\u0E2D\u0E07\u0E01\u0E32\u0E23\u0E14\u0E33\u0E40\u0E19\u0E34\u0E19\u0E01\u0E32\u0E23\u0E15\u0E48\u0E2D\u0E2B\u0E23\u0E37\u0E2D\u0E44\u0E21\u0E48?");
+    if (!ok) return;
+    const nb = Array.isArray(data.boxes) ? data.boxes : [];
+    const nh = Array.isArray(data.history) ? data.history : [];
+    const nw = Array.isArray(data.waterLogs) ? data.waterLogs : [];
+    const ns = data.settings && data.settings.parameters ? data.settings : DEFAULT_SETTINGS;
+    persistBoxes(nb);
+    persistHistory(nh);
+    persistWater(nw);
+    persistSettings(ns);
+    alert("\u0E19\u0E33\u0E40\u0E02\u0E49\u0E32\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E2A\u0E33\u0E40\u0E23\u0E47\u0E08");
+  }, [persistBoxes, persistHistory, persistWater, persistSettings]);
+  const resetAll = useCallback(() => {
+    const ok = confirm("\u0E22\u0E37\u0E19\u0E22\u0E31\u0E19\u0E25\u0E1A\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14\u0E43\u0E19\u0E40\u0E04\u0E23\u0E37\u0E48\u0E2D\u0E07\u0E19\u0E35\u0E49? \u0E01\u0E32\u0E23\u0E01\u0E23\u0E30\u0E17\u0E33\u0E19\u0E35\u0E49\u0E44\u0E21\u0E48\u0E2A\u0E32\u0E21\u0E32\u0E23\u0E16\u0E22\u0E49\u0E2D\u0E19\u0E01\u0E25\u0E31\u0E1A\u0E44\u0E14\u0E49");
+    if (!ok) return;
+    const ok2 = confirm("\u0E22\u0E37\u0E19\u0E22\u0E31\u0E19\u0E2D\u0E35\u0E01\u0E04\u0E23\u0E31\u0E49\u0E07 \u2014 \u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E01\u0E25\u0E48\u0E2D\u0E07 \u0E1B\u0E23\u0E30\u0E27\u0E31\u0E15\u0E34 \u0E41\u0E25\u0E30\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14\u0E08\u0E30\u0E16\u0E39\u0E01\u0E25\u0E1A\u0E16\u0E32\u0E27\u0E23");
+    if (!ok2) return;
+    storeClearCollection(COL_BOXES);
+    storeClearCollection(COL_HISTORY);
+    storeClearCollection(COL_WATER);
+    storeClearSettings();
+    setBoxes([]);
+    setHistory([]);
+    setWaterLogs([]);
+    setSettings(DEFAULT_SETTINGS);
+  }, []);
+  const saveBox = (box) => {
+    const exists = boxes.some((b) => b.id === box.id);
+    const next = exists ? boxes.map((b) => b.id === box.id ? box : b) : [...boxes, box];
+    persistBoxes(next, [box.id]);
+    setOpenBox(null);
+    setShowNewBox(false);
+    setPrefillBoxNumber("");
+  };
+  const deleteBox = (id) => {
+    persistBoxes(boxes.filter((b) => b.id !== id), [id]);
+    setOpenBox(null);
+  };
+  const confirmHarvest = (data) => {
+    const box = harvestTarget;
+    const record = {
+      id: uid(),
+      boxNumber: box.boxNumber,
+      batchNumber: box.batchNumber,
+      sex: box.sex,
+      stockDate: box.stockDate,
+      harvestDate: data.harvestDate,
+      daysGrown: daysBetween(box.stockDate, data.harvestDate),
+      weight: data.weight,
+      eggPercent: data.eggPercent,
+      costPerCrab: box.costPerCrab,
+      sellPricePerCrab: data.sellPricePerCrab,
+      profit: data.sellPricePerCrab !== "" && box.costPerCrab !== "" ? Number(data.sellPricePerCrab) - Number(box.costPerCrab) : null
+    };
+    persistHistory([...history, record], [record.id]);
+    persistBoxes(boxes.map((b) => b.id === box.id ? { ...b, status: "empty", harvestDate: data.harvestDate } : b), [box.id]);
+    setHarvestTarget(null);
+  };
+  const nextBatchFor = (boxNumber) => {
+    const past = history.filter((h) => h.boxNumber === boxNumber).length;
+    const current = boxes.find((b) => b.boxNumber === boxNumber);
+    return Math.max(past + 1, ((current == null ? void 0 : current.batchNumber) || 0) + 1);
+  };
+  const updateBox = (box) => persistBoxes(boxes.map((b) => b.id === box.id ? box : b), [box.id]);
+  const alerts = useMemo(() => {
+    const list = [];
+    boxes.forEach((b) => {
+      if (b.status !== "active") return;
+      if (b.sex === "female" && Number(b.eggPercent) >= 100) {
+        list.push({ id: `egg-${b.id}`, tone: "danger", text: `\u0E01\u0E25\u0E48\u0E2D\u0E07 #${b.boxNumber} \u2014 \u0E44\u0E02\u0E48\u0E40\u0E15\u0E47\u0E21 100% \u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E08\u0E31\u0E1A` });
+      }
+      if (b.targetWeight && Number(b.currentWeight) >= Number(b.targetWeight)) {
+        list.push({ id: `wt-${b.id}`, tone: "danger", text: `\u0E01\u0E25\u0E48\u0E2D\u0E07 #${b.boxNumber} \u2014 \u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E16\u0E36\u0E07\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22\u0E41\u0E25\u0E49\u0E27 (${num(b.currentWeight)}g)` });
+      }
+      const lastMolt = b.moltHistory && b.moltHistory.length ? b.moltHistory[b.moltHistory.length - 1] : null;
+      if (lastMolt) {
+        const d = daysBetween(lastMolt, todayStr());
+        if (d >= settings.moltReminderDays) {
+          list.push({ id: `molt-${b.id}`, tone: "warn", text: `\u0E01\u0E25\u0E48\u0E2D\u0E07 #${b.boxNumber} \u2014 \u0E44\u0E21\u0E48\u0E21\u0E35\u0E01\u0E32\u0E23\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A\u0E21\u0E32 ${d} \u0E27\u0E31\u0E19 \u0E04\u0E27\u0E23\u0E15\u0E23\u0E27\u0E08\u0E2A\u0E2D\u0E1A` });
+        }
+      }
+    });
+    if (waterLogs.length) {
+      const latest = waterLogs[waterLogs.length - 1];
+      settings.parameters.forEach((p) => {
+        const v = latest.readings[p.key];
+        if (v !== void 0 && (v < p.min || v > p.max)) {
+          list.push({ id: `water-${p.key}`, tone: "warn", text: `\u0E19\u0E49\u0E33: ${p.label} \u0E2D\u0E22\u0E39\u0E48\u0E19\u0E2D\u0E01\u0E0A\u0E48\u0E27\u0E07\u0E1B\u0E01\u0E15\u0E34 (${v}${p.unit}, \u0E1B\u0E01\u0E15\u0E34 ${p.min}\u2013${p.max}${p.unit})` });
+        }
+      });
+    }
+    return list;
+  }, [boxes, waterLogs, settings]);
+  const activeBoxes = boxes.filter((b) => b.status === "active");
+  const emptyBoxes = boxes.filter((b) => b.status === "empty");
+  const filteredBoxes = boxes.filter((b) => {
+    if (boxFilter.status !== "all" && b.status !== boxFilter.status) return false;
+    if (boxFilter.sex !== "all" && b.status === "active" && b.sex !== boxFilter.sex) return false;
+    if (boxFilter.q && !String(b.boxNumber).toLowerCase().includes(boxFilter.q.toLowerCase())) return false;
+    return true;
+  });
+  const listTotalPages = Math.max(1, Math.ceil(filteredBoxes.length / LIST_PAGE_SIZE));
+  const listPageClamped = Math.min(listPage, listTotalPages - 1);
+  const pagedBoxes = filteredBoxes.slice(listPageClamped * LIST_PAGE_SIZE, (listPageClamped + 1) * LIST_PAGE_SIZE);
+  const totalBiomass = activeBoxes.reduce((s, b) => s + Number(b.currentWeight || 0), 0);
+  const totalProfit = history.reduce((s, r) => s + Number(r.profit || 0), 0);
+  if (!authOk) {
+    return /* @__PURE__ */ React.createElement(LoginGate, { onSuccess: () => setAuthOk(true) });
+  }
+  if (!loaded) {
+    return /* @__PURE__ */ React.createElement("div", { style: { padding: 40, fontFamily: BODY, color: C.muted } }, "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E42\u0E2B\u0E25\u0E14\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E1F\u0E32\u0E23\u0E4C\u0E21\u2026");
+  }
+  return /* @__PURE__ */ React.createElement("div", { style: { fontFamily: BODY, background: C.paper, minHeight: "100vh", color: C.text, display: "flex" } }, /* @__PURE__ */ React.createElement("link", { rel: "stylesheet", href: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600;700&display=swap" }), /* @__PURE__ */ React.createElement("style", null, `
+        * { box-sizing: border-box; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-thumb { background: #C7D2C6; border-radius: 6px; }
+        button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid ${C.water}; outline-offset: 1px; }
+      `), /* @__PURE__ */ React.createElement("div", { style: { width: 210, background: C.ink, color: "#fff", flexShrink: 0, padding: "22px 14px", display: "flex", flexDirection: "column", minHeight: "100vh" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 26 } }, /* @__PURE__ */ React.createElement(LogoMark, { size: 48 }), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: DISPLAY, fontWeight: 700, fontSize: 16.5, letterSpacing: 0.2, lineHeight: 1.2 } }, "\u0E2D\u0E31\u0E19\u0E14\u0E32\u0E21\u0E31\u0E19\u0E1F\u0E32\u0E23\u0E4C\u0E21"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10.5, color: "rgba(255,255,255,0.55)" } }, "\u0E1F\u0E32\u0E23\u0E4C\u0E21\u0E1B\u0E39\u0E14\u0E33\u0E04\u0E2D\u0E19\u0E42\u0E14 \xB7 \u0E19\u0E49\u0E33\u0E17\u0E30\u0E40\u0E25\u0E40\u0E17\u0E35\u0E22\u0E21"))), TABS.map((t) => /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      key: t.id,
+      onClick: () => setTab(t.id),
+      style: {
+        textAlign: "left",
+        padding: "10px 12px",
+        borderRadius: 8,
+        border: "none",
+        background: tab === t.id ? "rgba(255,255,255,0.12)" : "transparent",
+        color: tab === t.id ? "#fff" : "rgba(255,255,255,0.7)",
+        fontWeight: tab === t.id ? 700 : 500,
+        fontSize: 13.5,
+        cursor: "pointer",
+        marginBottom: 4,
+        fontFamily: BODY
+      }
+    },
+    t.label
+  )), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.6 } }, activeBoxes.length, " \u0E01\u0E25\u0E48\u0E2D\u0E07\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07 \xB7 ", emptyBoxes.length, " \u0E01\u0E25\u0E48\u0E2D\u0E07\u0E27\u0E48\u0E32\u0E07")), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { position: "sticky", top: 0, zIndex: 20, background: "rgba(238,242,237,0.92)", backdropFilter: "blur(6px)", padding: "16px 26px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${C.line}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: DISPLAY, fontWeight: 700, fontSize: 21, color: C.ink } }, (_a = TABS.find((t) => t.id === tab)) == null ? void 0 : _a.label), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: C.muted, fontFamily: MONO } }, (/* @__PURE__ */ new Date()).toLocaleDateString("th-TH", { weekday: "short", day: "numeric", month: "short", year: "numeric" })), /* @__PURE__ */ React.createElement("div", { style: { position: "relative" } }, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowAlerts((v) => !v), style: { position: "relative", background: C.card, border: `1px solid ${C.line}`, borderRadius: 8, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.ink } }, /* @__PURE__ */ React.createElement(IconBell, null), alerts.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", top: -4, right: -4, background: C.coral, color: "#fff", fontSize: 10, fontWeight: 700, borderRadius: 10, minWidth: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px" } }, alerts.length)), showAlerts && /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", right: 0, top: 42, width: 320, background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, boxShadow: "0 12px 30px rgba(11,35,51,0.18)", padding: 10, zIndex: 30, maxHeight: 340, overflowY: "auto" } }, alerts.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: C.muted, padding: 8 } }, "\u0E44\u0E21\u0E48\u0E21\u0E35\u0E01\u0E32\u0E23\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19"), alerts.map((a) => /* @__PURE__ */ React.createElement("div", { key: a.id, style: { padding: "8px 6px", borderBottom: `1px solid ${C.line}`, fontSize: 12.5 } }, /* @__PURE__ */ React.createElement(Pill, { tone: a.tone }, a.tone === "danger" ? "\u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E08\u0E31\u0E1A" : "\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19"), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 5 } }, a.text))))), tab === "boxes" && /* @__PURE__ */ React.createElement(Btn, { tone: "coral", size: "sm", onClick: () => setShowNewBox(true) }, "+ \u0E40\u0E1E\u0E34\u0E48\u0E21\u0E01\u0E25\u0E48\u0E2D\u0E07"))), /* @__PURE__ */ React.createElement("div", { style: { padding: 26 } }, tab === "dashboard" && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 20 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 14, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14", value: boxes.length }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07\u0E2D\u0E22\u0E39\u0E48", value: activeBoxes.length, tone: "seagrass" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E27\u0E48\u0E32\u0E07", value: emptyBoxes.length }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E23\u0E27\u0E21 (biomass)", value: `${num(totalBiomass)} g`, tone: "water" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E33\u0E44\u0E23\u0E2A\u0E30\u0E2A\u0E21\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14", value: `${money(totalProfit)} \u0E1A.`, tone: totalProfit >= 0 ? "seagrass" : "coral" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19\u0E17\u0E35\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E14\u0E33\u0E40\u0E19\u0E34\u0E19\u0E01\u0E32\u0E23", value: alerts.length, tone: alerts.length ? "coral" : "ink" })), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19"), alerts.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: C.muted } }, "\u0E44\u0E21\u0E48\u0E21\u0E35\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E17\u0E35\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E14\u0E33\u0E40\u0E19\u0E34\u0E19\u0E01\u0E32\u0E23\u0E15\u0E2D\u0E19\u0E19\u0E35\u0E49 \u{1F389}"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }, alerts.map((a) => /* @__PURE__ */ React.createElement("div", { key: a.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: a.tone === "danger" ? "rgba(226,96,58,0.08)" : "rgba(201,138,46,0.08)", borderRadius: 8 } }, /* @__PURE__ */ React.createElement(Pill, { tone: a.tone }, a.tone === "danger" ? "\u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E08\u0E31\u0E1A" : "\u0E40\u0E15\u0E37\u0E2D\u0E19"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13 } }, a.text))))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E20\u0E32\u0E1E\u0E23\u0E27\u0E21\u0E0A\u0E48\u0E27\u0E07\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33\u0E25\u0E48\u0E32\u0E2A\u0E38\u0E14" }, "\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33"), waterLogs.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: C.muted } }, '\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E01\u0E32\u0E23\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33 \u2014 \u0E44\u0E1B\u0E17\u0E35\u0E48\u0E41\u0E17\u0E47\u0E1A "\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33" \u0E40\u0E1E\u0E37\u0E48\u0E2D\u0E40\u0E23\u0E34\u0E48\u0E21\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01') : /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "0 24px" } }, settings.parameters.map((p) => {
+    var _a2;
+    return /* @__PURE__ */ React.createElement(GaugeBar, { key: p.key, param: p, value: (_a2 = waterLogs[waterLogs.length - 1].readings[p.key]) != null ? _a2 : null });
+  })))), tab === "boxes" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, background: "#E4E9E2", borderRadius: 10, padding: 3 } }, /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      onClick: () => setBoxViewMode("plan"),
+      style: {
+        padding: "7px 14px",
+        borderRadius: 8,
+        border: "none",
+        cursor: "pointer",
+        background: boxViewMode === "plan" ? C.card : "transparent",
+        fontWeight: 700,
+        fontSize: 12.5,
+        color: boxViewMode === "plan" ? C.ink : C.muted,
+        boxShadow: boxViewMode === "plan" ? "0 1px 3px rgba(0,0,0,0.12)" : "none"
+      }
+    },
+    "\u0E1C\u0E31\u0E07\u0E04\u0E2D\u0E19\u0E42\u0E14"
+  ), /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      onClick: () => setBoxViewMode("list"),
+      style: {
+        padding: "7px 14px",
+        borderRadius: 8,
+        border: "none",
+        cursor: "pointer",
+        background: boxViewMode === "list" ? C.card : "transparent",
+        fontWeight: 700,
+        fontSize: 12.5,
+        color: boxViewMode === "list" ? C.ink : C.muted,
+        boxShadow: boxViewMode === "list" ? "0 1px 3px rgba(0,0,0,0.12)" : "none"
+      }
+    },
+    "\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23"
+  ))), boxViewMode === "plan" ? /* @__PURE__ */ React.createElement(
+    FloorPlanView,
+    {
+      boxes,
+      settings,
+      onOpenBox: setOpenBox,
+      onQuickHarvest: setHarvestTarget,
+      onAddAt: (code) => {
+        setPrefillBoxNumber(code);
+        setShowNewBox(true);
+      }
+    }
+  ) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("input", { style: { ...inputStyle, width: 200 }, placeholder: "\u0E04\u0E49\u0E19\u0E2B\u0E32\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E01\u0E25\u0E48\u0E2D\u0E07\u2026", value: boxFilter.q, onChange: (e) => setBoxFilter((f) => ({ ...f, q: e.target.value })) }), /* @__PURE__ */ React.createElement("select", { style: { ...inputStyle, width: 150 }, value: boxFilter.status, onChange: (e) => setBoxFilter((f) => ({ ...f, status: e.target.value })) }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "\u0E17\u0E38\u0E01\u0E2A\u0E16\u0E32\u0E19\u0E30"), /* @__PURE__ */ React.createElement("option", { value: "active" }, "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07"), /* @__PURE__ */ React.createElement("option", { value: "empty" }, "\u0E27\u0E48\u0E32\u0E07")), /* @__PURE__ */ React.createElement("select", { style: { ...inputStyle, width: 150 }, value: boxFilter.sex, onChange: (e) => setBoxFilter((f) => ({ ...f, sex: e.target.value })) }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "\u0E17\u0E38\u0E01\u0E40\u0E1E\u0E28"), /* @__PURE__ */ React.createElement("option", { value: "male" }, "\u0E15\u0E31\u0E27\u0E1C\u0E39\u0E49"), /* @__PURE__ */ React.createElement("option", { value: "female" }, "\u0E15\u0E31\u0E27\u0E40\u0E21\u0E35\u0E22"))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "\u0E1E\u0E1A ", filteredBoxes.length.toLocaleString(), " \u0E01\u0E25\u0E48\u0E2D\u0E07"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 14 } }, pagedBoxes.map((b) => /* @__PURE__ */ React.createElement(BoxCard, { key: b.id, box: b, onOpen: setOpenBox, onQuickHarvest: setHarvestTarget, moltReminderDays: settings.moltReminderDays })), filteredBoxes.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { color: C.muted, fontSize: 13 } }, "\u0E44\u0E21\u0E48\u0E1E\u0E1A\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E15\u0E32\u0E21\u0E40\u0E07\u0E37\u0E48\u0E2D\u0E19\u0E44\u0E02")), listTotalPages > 1 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 14, marginTop: 20 } }, /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", disabled: listPageClamped === 0, onClick: () => setListPage(Math.max(0, listPageClamped - 1)) }, "\u2190 \u0E01\u0E48\u0E2D\u0E19\u0E2B\u0E19\u0E49\u0E32"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: C.muted, fontFamily: MONO } }, "\u0E2B\u0E19\u0E49\u0E32 ", listPageClamped + 1, " / ", listTotalPages), /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", disabled: listPageClamped >= listTotalPages - 1, onClick: () => setListPage(Math.min(listTotalPages - 1, listPageClamped + 1)) }, "\u0E16\u0E31\u0E14\u0E44\u0E1B \u2192")))), tab === "water" && /* @__PURE__ */ React.createElement(WaterTab, { waterLogs, settings, onAddLog: (l) => persistWater([...waterLogs, l], [l.id]), onUpdateSettings: persistSettings }), tab === "feed" && /* @__PURE__ */ React.createElement(FeedTab, { boxes, settings, onUpdateBox: updateBox, onUpdateSettings: persistSettings }), tab === "history" && /* @__PURE__ */ React.createElement(HistoryTab, { history }), tab === "settings" && /* @__PURE__ */ React.createElement(
+    SettingsTab,
+    {
+      settings,
+      onSave: persistSettings,
+      onExport: exportData,
+      onImport: importData,
+      onResetAll: resetAll,
+      counts: { boxes: boxes.length, history: history.length, water: waterLogs.length }
+    }
+  ))), showNewBox && /* @__PURE__ */ React.createElement(BoxFormModal, { onSave: saveBox, onClose: () => {
+    setShowNewBox(false);
+    setPrefillBoxNumber("");
+  }, prefillBoxNumber }), openBox && /* @__PURE__ */ React.createElement(BoxFormModal, { initial: openBox, onSave: saveBox, onClose: () => setOpenBox(null), onDelete: deleteBox, nextBatchFor }), harvestTarget && /* @__PURE__ */ React.createElement(HarvestModal, { box: harvestTarget, onConfirm: confirmHarvest, onClose: () => setHarvestTarget(null) }));
+}
+
+export default App;
