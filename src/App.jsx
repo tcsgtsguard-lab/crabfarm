@@ -1,18 +1,56 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 
 /* ===================== CLOUD STORAGE LAYER =====================
-   Data is stored with window.storage (shared = true) so every device
-   that opens this app link sees the SAME data — that's what makes it
+   Data is stored under a single key/value scheme so every device
+   that opens this app sees the SAME data — that's what makes it
    usable "everywhere" instead of being stuck on one phone/tablet.
    Boxes/history/water are split into chunks so the app scales to
-   tens of thousands of records without hitting the 5MB per-key limit,
-   and a normal edit only has to re-write the one chunk it touched. */
+   tens of thousands of records without hitting size limits, and a
+   normal edit only has to re-write the one chunk it touched.
+
+   BACKEND: this file works in two environments without any code
+   changes and WITHOUT any extra npm packages:
+   1) Inside a Claude.ai artifact — uses the built-in window.storage.
+   2) Deployed on Vercel / Netlify / GitHub Pages / anywhere else —
+      talks to Supabase directly over its REST API using plain
+      fetch() (no @supabase/supabase-js import needed). Provide
+      window.CRABFARM_CONFIG before this script loads (e.g. a
+      <script> tag in public/index.html) and it "just works".
+   Whichever backend is available is picked automatically at runtime. */
+const RUNTIME_CONFIG = typeof window !== "undefined" && window.CRABFARM_CONFIG || {};
+const SUPABASE_URL = RUNTIME_CONFIG.supabaseUrl || "";
+const SUPABASE_ANON_KEY = RUNTIME_CONFIG.supabaseAnonKey || "";
+const KV_TABLE = "crabfarm_kv";
+function hasClaudeStorage() {
+  return typeof window !== "undefined" && !!window.storage;
+}
+function hasSupabase() {
+  return !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+}
+async function supabaseRequest(pathAndQuery, options = {}) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${pathAndQuery}`, {
+    ...options,
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {})
+    }
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Supabase request failed (${res.status}): ${text}`);
+  }
+  if (res.status === 204) return null;
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
 const SHARED = true;
 const SETTINGS_KEY = "crabfarm:settings";
 const COL_BOXES = "boxes";
 const COL_HISTORY = "history";
 const COL_WATER = "water";
-const CHUNKS = { boxes: 24, history: 10, water: 10 }; // 24 chunks * ~1200 boxes each supports 30,000+ boxes safely under the 5MB/key limit
+const CHUNKS = { boxes: 24, history: 10, water: 10 }; // 24 chunks * ~1200 boxes each supports 30,000+ boxes safely under the size limit per key
 function chunkKey(prefix, i) {
   return `crabfarm:${prefix}:${i}`;
 }
@@ -33,12 +71,23 @@ function groupByChunk(items, n) {
   });
   return map;
 }
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 async function storageGetRaw(key, attempts = 3) {
   let lastErr = null;
   for (let i = 0; i < attempts; i++) {
     try {
-      const res = await window.storage.get(key, SHARED);
-      return res ? res.value : null;
+      if (hasClaudeStorage()) {
+        const res = await window.storage.get(key, SHARED);
+        return res ? res.value : null;
+      }
+      if (hasSupabase()) {
+        const rows = await supabaseRequest(`${KV_TABLE}?key=eq.${encodeURIComponent(key)}&select=value`);
+        return rows && rows[0] ? rows[0].value : null;
+      }
+      console.error("crabfarm: no storage backend configured (set window.CRABFARM_CONFIG)");
+      return null;
     } catch (e) {
       lastErr = e;
       if (i < attempts - 1) await sleep(300 * (i + 1));
@@ -47,16 +96,25 @@ async function storageGetRaw(key, attempts = 3) {
   if (lastErr) console.error("storage get failed after retries", key, lastErr);
   return null;
 }
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 async function storageSetRaw(key, value, attempts = 4) {
   let lastErr = null;
   for (let i = 0; i < attempts; i++) {
     try {
-      const res = await window.storage.set(key, value, SHARED);
-      if (res) return true;
-      lastErr = new Error("storage set returned null");
+      if (hasClaudeStorage()) {
+        const res = await window.storage.set(key, value, SHARED);
+        if (res) return true;
+        lastErr = new Error("storage set returned null");
+      } else if (hasSupabase()) {
+        await supabaseRequest(`${KV_TABLE}?on_conflict=key`, {
+          method: "POST",
+          headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+          body: JSON.stringify([{ key, value, updated_at: (/* @__PURE__ */ new Date()).toISOString() }])
+        });
+        return true;
+      } else {
+        console.error("crabfarm: no storage backend configured (set window.CRABFARM_CONFIG)");
+        return false;
+      }
     } catch (e) {
       lastErr = e;
     }
@@ -67,15 +125,27 @@ async function storageSetRaw(key, value, attempts = 4) {
 }
 async function storageDeleteRaw(key) {
   try {
-    await window.storage.delete(key, SHARED);
+    if (hasClaudeStorage()) {
+      await window.storage.delete(key, SHARED);
+    } else if (hasSupabase()) {
+      await supabaseRequest(`${KV_TABLE}?key=eq.${encodeURIComponent(key)}`, {
+        method: "DELETE",
+        headers: { Prefer: "return=minimal" }
+      });
+    }
   } catch (e) {
   }
 }
 async function storeGetCollection(prefix) {
   let keys = [];
   try {
-    const res = await window.storage.list(`crabfarm:${prefix}:`, SHARED);
-    keys = res && res.keys ? res.keys : [];
+    if (hasClaudeStorage()) {
+      const res = await window.storage.list(`crabfarm:${prefix}:`, SHARED);
+      keys = res && res.keys ? res.keys : [];
+    } else if (hasSupabase()) {
+      const rows = await supabaseRequest(`${KV_TABLE}?key=like.crabfarm:${prefix}:*&select=key`);
+      keys = (rows || []).map((r) => r.key);
+    }
   } catch (e) {
     keys = [];
   }
