@@ -1,10 +1,21 @@
 <!doctype html>
-<html lang="en">
+<html lang="th">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>crabfarm</title>
+    <title>Andaman Crab Farm</title>
+
+    <!--
+      ตั้งค่า Supabase ตรงนี้ "ก่อน" สคริปต์หลักเสมอ
+      ต้องแทนที่ YOUR_SUPABASE_URL และ YOUR_SUPABASE_ANON_KEY
+      ด้วยค่าจริงจากโปรเจกต์ Supabase ของคุณ (ดูวิธีหาในคู่มือ DEPLOY.md)
+    -->
+    <script>
+      window.CRABFARM_CONFIG = {
+        supabaseUrl: "https://ufqgobrwriookjxciftj.supabase.co",
+        supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVmcWdvYnJ3cmlvb2tqeGNpZnRqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc3Mjg1MDAsImV4cCI6MjEwMzMwNDUwMH0.4yOxq05YYEWJJNNjkB9mmdiZ3l7RK8NmUmYEBWuMic0",
+      };
+    </script>
   </head>
   <body>
     <div id="root"></div>
