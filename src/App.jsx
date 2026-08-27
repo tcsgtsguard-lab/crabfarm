@@ -808,7 +808,7 @@ function MoltHistorySection({ f, settings, onAddMolt }) {
       )}
       <div style={{ background: "#F6F8F5", border: `1px solid ${C.line}`, borderRadius: 8, padding: 12 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: C.brine, marginBottom: 8 }}>+ บันทึกลอกคราบใหม่</div>
-        <div className="cf-grid-molt" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "0 12px" }}>
+        <div className="cf-grid-molt" style={{ display: "grid", gridTemplateColumns: "1fr", gap: 0 }}>
           <Field label="วันที่ลอกคราบ">
             <input type="date" className="cf-date-field" style={{ ...inputStyle, minWidth: 0 }} value={draft.date} onChange={(e) => setDraftField("date", e.target.value)} />
           </Field>
