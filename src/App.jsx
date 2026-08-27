@@ -748,7 +748,7 @@ function MoltHistorySection({ f, settings, onAddMolt }) {
   };
   const failing = stats.filter((s) => s.passedStandard === false);
   return (
-    <div style={{ marginTop: 4, marginBottom: 14 }}>
+    <div style={{ marginTop: 4, marginBottom: 14, gridColumn: "1 / -1" }}>
       <div style={{ fontSize: 12.5, fontWeight: 700, color: C.brine, marginBottom: 6 }}>
         ประวัติการลอกคราบ &amp; น้ำหนัก
       </div>
@@ -808,7 +808,7 @@ function MoltHistorySection({ f, settings, onAddMolt }) {
       )}
       <div style={{ background: "#F6F8F5", border: `1px solid ${C.line}`, borderRadius: 8, padding: 12 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: C.brine, marginBottom: 8 }}>+ บันทึกลอกคราบใหม่</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>
+        <div className="cf-grid-2col" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "0 12px" }}>
           <Field label="วันที่ลอกคราบ">
             <input type="date" style={inputStyle} value={draft.date} onChange={(e) => setDraftField("date", e.target.value)} />
           </Field>
