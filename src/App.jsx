@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 
 /* ===================== CLOUD STORAGE LAYER =====================
    Data is stored under a single key/value scheme so every device
@@ -235,6 +235,7 @@ const DEFAULT_SETTINGS = {
   feedPelletWeightGrams: 0.1,
   feedIntervalDays: 1,
   moltReminderDays: 21,
+  moltStandardGrowthPercent: 10,
   parameters: DEFAULT_PARAMS,
   layoutRows: ["A", "B", "C", "D"],
   layoutSlotsPerRow: 5,
@@ -281,6 +282,43 @@ const daysBetween = (a, b) => {
   const d1 = new Date(a), d2 = new Date(b);
   return Math.round((d2 - d1) / 864e5);
 };
+// Molt history entries used to be plain date strings; newer entries are
+// records with weight/complete/limbLoss so we can track growth per molt.
+// These helpers read either shape safely.
+function moltEntryDate(m) {
+  if (!m) return null;
+  return typeof m === "string" ? m : m.date || null;
+}
+function moltEntryWeight(m) {
+  if (!m || typeof m === "string") return null;
+  return m.weight === "" || m.weight === null || m.weight === void 0 ? null : Number(m.weight);
+}
+function moltGrowthStats(moltHistory, initialWeight, standardPercent) {
+  const list = moltHistory || [];
+  let prevWeight = initialWeight === "" || initialWeight === null || initialWeight === void 0 || isNaN(initialWeight) ? null : Number(initialWeight);
+  return list.map((entry) => {
+    const w = moltEntryWeight(entry);
+    let gain = null, gainPercent = null, passedStandard = null;
+    if (w !== null && prevWeight !== null && prevWeight > 0) {
+      gain = w - prevWeight;
+      gainPercent = gain / prevWeight * 100;
+      passedStandard = gainPercent >= (standardPercent != null ? standardPercent : 10);
+    }
+    const stat = {
+      date: moltEntryDate(entry),
+      weight: w,
+      complete: typeof entry === "object" && entry ? !!entry.complete : null,
+      limbLoss: typeof entry === "object" && entry ? !!entry.limbLoss : false,
+      notes: typeof entry === "object" && entry ? entry.notes || "" : "",
+      prevWeight,
+      gain,
+      gainPercent,
+      passedStandard
+    };
+    if (w !== null) prevWeight = w;
+    return stat;
+  });
+}
 const money = (n) => n === "" || n === null || n === void 0 || isNaN(n) ? "\u2014" : Number(n).toLocaleString("th-TH", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const num = (n, d = 0) => n === "" || n === null || n === void 0 || isNaN(n) ? "\u2014" : Number(n).toLocaleString("th-TH", { minimumFractionDigits: d, maximumFractionDigits: d });
 function LogoMark({ size = 40 }) {
@@ -478,7 +516,8 @@ function Modal({ title, onClose, children, wide }) {
 }
 function computeBoxStatus(box, moltReminderDays) {
   const isEmpty = box.status === "empty";
-  const lastMolt = box.moltHistory && box.moltHistory.length ? box.moltHistory[box.moltHistory.length - 1] : null;
+  const lastMoltEntry = box.moltHistory && box.moltHistory.length ? box.moltHistory[box.moltHistory.length - 1] : null;
+  const lastMolt = lastMoltEntry ? moltEntryDate(lastMoltEntry) : null;
   const daysSinceMolt = lastMolt ? daysBetween(lastMolt, todayStr()) : null;
   const daysSinceStock = box.stockDate ? daysBetween(box.stockDate, todayStr()) : null;
   const eggReady = !isEmpty && box.sex === "female" && Number(box.eggPercent) >= 100;
@@ -672,7 +711,117 @@ function FloorPlanView({ boxes, settings, onOpenBox, onQuickHarvest, onAddAt }) 
     }
   )))));
 }
-function BoxFormModal({ initial, onSave, onClose, onDelete, nextBatchFor, prefillBoxNumber }) {
+function MoltHistorySection({ f, settings, onAddMolt }) {
+  const standardPercent = (settings && settings.moltStandardGrowthPercent) != null ? settings.moltStandardGrowthPercent : 10;
+  const stats = useMemo(
+    () => moltGrowthStats(f.moltHistory, f.initialWeight, standardPercent),
+    [f.moltHistory, f.initialWeight, standardPercent]
+  );
+  const [draft, setDraft] = useState({ date: todayStr(), weight: "", complete: true, limbLoss: false, notes: "" });
+  const setDraftField = (k, v) => setDraft((p) => ({ ...p, [k]: v }));
+  const submitMolt = () => {
+    if (draft.weight === "" || isNaN(draft.weight) || Number(draft.weight) <= 0) {
+      alert("กรุณากรอกน้ำหนักหลังลอกคราบ (ตัวเลขมากกว่า 0)");
+      return;
+    }
+    onAddMolt({
+      date: draft.date || todayStr(),
+      weight: Number(draft.weight),
+      complete: !!draft.complete,
+      limbLoss: !!draft.limbLoss,
+      notes: draft.notes || ""
+    });
+    setDraft({ date: todayStr(), weight: "", complete: true, limbLoss: false, notes: "" });
+  };
+  const failing = stats.filter((s) => s.passedStandard === false);
+  return (
+    <div style={{ marginTop: 4, marginBottom: 14 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: C.brine, marginBottom: 6 }}>
+        ประวัติการลอกคราบ &amp; น้ำหนัก
+      </div>
+      <div style={{ fontSize: 11.5, color: C.muted, marginBottom: 8 }}>
+        น้ำหนักเริ่มต้น: <b style={{ fontFamily: MONO, color: C.text }}>{f.initialWeight ? num(f.initialWeight) : num(f.currentWeight)} g</b>
+        {" "}&middot; มาตรฐานน้ำหนักเพิ่มขึ้นต่อครั้ง: <b style={{ fontFamily: MONO, color: C.text }}>{standardPercent}%</b>
+      </div>
+      {stats.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 10 }}>ยังไม่มีบันทึกการลอกคราบ</div>
+      ) : (
+        <div style={{ overflowX: "auto", marginBottom: 10 }}>
+          <table style={tableStyle}>
+            <thead>
+              <tr>
+                <th style={thStyle}>วันที่</th>
+                <th style={thStyle}>น้ำหนัก (g)</th>
+                <th style={thStyle}>เพิ่มขึ้น</th>
+                <th style={thStyle}>เทียบมาตรฐาน</th>
+                <th style={thStyle}>ลอกคราบครบ</th>
+                <th style={thStyle}>แขนขาขาด</th>
+                <th style={thStyle}>หมายเหตุ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.map((s, i) => (
+                <tr key={i}>
+                  <td style={tdStyle}>{fmtDate(s.date)}</td>
+                  <td style={{ ...tdStyle, fontFamily: MONO, fontWeight: 700 }}>{s.weight !== null ? num(s.weight) : "—"}</td>
+                  <td style={{ ...tdStyle, fontFamily: MONO, color: s.gain === null ? C.muted : s.gain >= 0 ? C.seagrass : C.coral }}>
+                    {s.gain === null ? "—" : `${s.gain >= 0 ? "+" : ""}${num(s.gain)} g (${s.gain >= 0 ? "+" : ""}${num(s.gainPercent, 1)}%)`}
+                  </td>
+                  <td style={tdStyle}>
+                    {s.passedStandard === null ? (
+                      <span style={{ color: C.muted, fontSize: 11.5 }}>—</span>
+                    ) : (
+                      <Pill tone={s.passedStandard ? "good" : "danger"}>{s.passedStandard ? "ผ่านมาตรฐาน" : "ต่ำกว่ามาตรฐาน"}</Pill>
+                    )}
+                  </td>
+                  <td style={tdStyle}>
+                    {s.complete === null ? "—" : <Pill tone={s.complete ? "good" : "warn"}>{s.complete ? "ครบ" : "ไม่ครบ"}</Pill>}
+                  </td>
+                  <td style={tdStyle}>
+                    <Pill tone={s.limbLoss ? "warn" : "muted"}>{s.limbLoss ? "มี" : "ไม่มี"}</Pill>
+                  </td>
+                  <td style={{ ...tdStyle, fontSize: 12 }}>{s.notes || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {failing.length > 0 && (
+        <div style={{ background: "rgba(226,96,58,0.08)", border: `1px solid rgba(226,96,58,0.3)`, borderRadius: 8, padding: "10px 12px", marginBottom: 10, fontSize: 12.5, lineHeight: 1.6 }}>
+          <b style={{ color: C.coral }}>คำแนะนำ:</b> มีการลอกคราบ {failing.length} ครั้งที่น้ำหนักเพิ่มขึ้นต่ำกว่ามาตรฐาน ({standardPercent}%)
+          ลองเพิ่มปริมาณอาหารต่อวัน และเสริมแคลเซียม/อัลคาไลนิตี้ในน้ำ (ดูได้ที่แท็บ "น้ำ/ปั๊ม") เพื่อช่วยให้สร้างเปลือกใหม่ได้แข็งแรงและโตเต็มที่ขึ้นในรอบถัดไป
+        </div>
+      )}
+      <div style={{ background: "#F6F8F5", border: `1px solid ${C.line}`, borderRadius: 8, padding: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: C.brine, marginBottom: 8 }}>+ บันทึกลอกคราบใหม่</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 12px" }}>
+          <Field label="วันที่ลอกคราบ">
+            <input type="date" style={inputStyle} value={draft.date} onChange={(e) => setDraftField("date", e.target.value)} />
+          </Field>
+          <Field label="น้ำหนักหลังลอกคราบ (กรัม)">
+            <input type="number" style={inputStyle} value={draft.weight} placeholder="เช่น 250" onChange={(e) => setDraftField("weight", e.target.value)} />
+          </Field>
+        </div>
+        <div style={{ display: "flex", gap: 18, marginBottom: 10, flexWrap: "wrap" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, cursor: "pointer" }}>
+            <input type="checkbox" checked={draft.complete} onChange={(e) => setDraftField("complete", e.target.checked)} />
+            ลอกคราบครบ
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, cursor: "pointer" }}>
+            <input type="checkbox" checked={draft.limbLoss} onChange={(e) => setDraftField("limbLoss", e.target.checked)} />
+            แขนขาขาด
+          </label>
+        </div>
+        <Field label="หมายเหตุ (ถ้ามี)">
+          <input style={inputStyle} value={draft.notes} placeholder="เช่น เปลือกนิ่มผิดปกติ" onChange={(e) => setDraftField("notes", e.target.value)} />
+        </Field>
+        <Btn size="sm" tone="seagrass" onClick={submitMolt}>+ บันทึกลอกคราบ</Btn>
+      </div>
+    </div>
+  );
+}
+function BoxFormModal({ initial, onSave, onClose, onDelete, nextBatchFor, prefillBoxNumber, allBoxes, settings }) {
   const isNew = !initial;
   const [f, setF] = useState(
     initial ? { ...initial } : {
@@ -683,6 +832,7 @@ function BoxFormModal({ initial, onSave, onClose, onDelete, nextBatchFor, prefil
       stockDate: todayStr(),
       moltHistory: [],
       currentWeight: "",
+      initialWeight: "",
       targetWeight: "",
       goal: "",
       eggPercent: 0,
@@ -693,20 +843,40 @@ function BoxFormModal({ initial, onSave, onClose, onDelete, nextBatchFor, prefil
       harvestDate: null
     }
   );
+  const [boxNumberError, setBoxNumberError] = useState("");
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const restock = f.status === "empty";
   const submit = () => {
     if (!f.boxNumber) {
+      setBoxNumberError("กรุณาระบุเบอร์กล่อง");
       alert("\u0E01\u0E23\u0E38\u0E13\u0E32\u0E23\u0E30\u0E1A\u0E38\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E01\u0E25\u0E48\u0E2D\u0E07");
       return;
     }
-    const payload = restock ? { ...f, status: "active", batchNumber: nextBatchFor ? nextBatchFor(f.boxNumber) : (f.batchNumber || 1) + 1, stockDate: f.stockDate || todayStr(), moltHistory: [], harvestDate: null } : { ...f, status: "active" };
+    if (isNew || restock) {
+      const dup = (allBoxes || []).some(
+        (b) => b.id !== f.id && b.status === "active" && String(b.boxNumber).trim().toUpperCase() === String(f.boxNumber).trim().toUpperCase()
+      );
+      if (dup) {
+        const msg = `เบอร์กล่อง "${f.boxNumber}" มีปูกำลังเลี้ยงอยู่แล้ว กรุณาตรวจสอบ หรือเก็บเกี่ยวกล่องเดิมก่อน`;
+        setBoxNumberError(msg);
+        alert(msg);
+        return;
+      }
+    }
+    setBoxNumberError("");
+    // Snapshot the starting weight the first time (before any molt is
+    // recorded) so molt growth % can always be compared against it.
+    const baseInitialWeight = f.moltHistory && f.moltHistory.length ? f.initialWeight : f.currentWeight;
+    const payload = restock
+      ? { ...f, status: "active", batchNumber: nextBatchFor ? nextBatchFor(f.boxNumber) : (f.batchNumber || 1) + 1, stockDate: f.stockDate || todayStr(), moltHistory: [], initialWeight: f.currentWeight, harvestDate: null }
+      : { ...f, status: "active", initialWeight: baseInitialWeight };
     onSave(payload);
   };
-  const addMoltToday = () => {
-    set("moltHistory", [...f.moltHistory || [], todayStr()]);
+  const addMoltEntry = (entry) => {
+    set("moltHistory", [...f.moltHistory || [], entry]);
+    set("currentWeight", entry.weight);
   };
-  return /* @__PURE__ */ React.createElement(Modal, { title: isNew ? "\u0E40\u0E1E\u0E34\u0E48\u0E21\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E1B\u0E39\u0E43\u0E2B\u0E21\u0E48" : restock ? `\u0E25\u0E07\u0E1B\u0E39\u0E43\u0E2B\u0E21\u0E48 \u2014 \u0E01\u0E25\u0E48\u0E2D\u0E07 #${f.boxNumber}` : `\u0E01\u0E25\u0E48\u0E2D\u0E07 #${f.boxNumber} \xB7 \u0E23\u0E38\u0E48\u0E19\u0E17\u0E35\u0E48 ${f.batchNumber}`, onClose, wide: true }, /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" } }, /* @__PURE__ */ React.createElement(Field, { label: "\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E01\u0E25\u0E48\u0E2D\u0E07", hint: "\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A: \u0E15\u0E31\u0E27\u0E2D\u0E31\u0E01\u0E29\u0E23\u0E41\u0E16\u0E27 + \u0E40\u0E25\u0E02\u0E0A\u0E48\u0E2D\u0E07 \u0E40\u0E0A\u0E48\u0E19 A01, B03" }, /* @__PURE__ */ React.createElement("input", { style: inputStyle, value: f.boxNumber, disabled: !isNew, onChange: (e) => set("boxNumber", e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "")), placeholder: "\u0E40\u0E0A\u0E48\u0E19 A01" })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E40\u0E1E\u0E28" }, /* @__PURE__ */ React.createElement("select", { style: inputStyle, value: f.sex, onChange: (e) => set("sex", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "male" }, "\u0E15\u0E31\u0E27\u0E1C\u0E39\u0E49"), /* @__PURE__ */ React.createElement("option", { value: "female" }, "\u0E15\u0E31\u0E27\u0E40\u0E21\u0E35\u0E22"))), /* @__PURE__ */ React.createElement(Field, { label: "\u0E27\u0E31\u0E19\u0E25\u0E07\u0E1B\u0E39" }, /* @__PURE__ */ React.createElement("input", { type: "date", style: inputStyle, value: f.stockDate || "", onChange: (e) => set("stockDate", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E1B\u0E31\u0E08\u0E08\u0E38\u0E1A\u0E31\u0E19 (\u0E01\u0E23\u0E31\u0E21)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: f.currentWeight, onChange: (e) => set("currentWeight", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22 (\u0E01\u0E23\u0E31\u0E21)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: f.targetWeight, onChange: (e) => set("targetWeight", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E19\u0E35\u0E49" }, /* @__PURE__ */ React.createElement("select", { style: inputStyle, value: f.goal || "", onChange: (e) => set("goal", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u0E44\u0E21\u0E48\u0E23\u0E30\u0E1A\u0E38"), /* @__PURE__ */ React.createElement("option", { value: "fatten" }, "\u0E02\u0E38\u0E19\u0E43\u0E2B\u0E49\u0E42\u0E15"), /* @__PURE__ */ React.createElement("option", { value: "eggs" }, "\u0E23\u0E2D\u0E44\u0E02\u0E48"), /* @__PURE__ */ React.createElement("option", { value: "molt" }, "\u0E23\u0E2D\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A"), /* @__PURE__ */ React.createElement("option", { value: "quick_sale" }, "\u0E02\u0E32\u0E22\u0E14\u0E48\u0E27\u0E19"), /* @__PURE__ */ React.createElement("option", { value: "broodstock" }, "\u0E1E\u0E48\u0E2D\u0E1E\u0E31\u0E19\u0E18\u0E38\u0E4C"))), f.sex === "female" && /* @__PURE__ */ React.createElement(Field, { label: "\u0E44\u0E02\u0E48 (%)" }, /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "100", style: inputStyle, value: f.eggPercent, onChange: (e) => set("eggPercent", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E1B\u0E23\u0E34\u0E21\u0E32\u0E13\u0E2D\u0E32\u0E2B\u0E32\u0E23/\u0E27\u0E31\u0E19 (\u0E01\u0E23\u0E31\u0E21)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: f.feedPerDay, onChange: (e) => set("feedPerDay", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E15\u0E49\u0E19\u0E17\u0E38\u0E19\u0E17\u0E35\u0E48\u0E23\u0E31\u0E1A\u0E21\u0E32 (\u0E1A\u0E32\u0E17/\u0E15\u0E31\u0E27)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: f.costPerCrab, onChange: (e) => set("costPerCrab", e.target.value) }))), !restock && !isNew && /* @__PURE__ */ React.createElement("div", { style: { marginTop: 4, marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: C.brine, marginBottom: 6 } }, "\u0E1B\u0E23\u0E30\u0E27\u0E31\u0E15\u0E34\u0E01\u0E32\u0E23\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 } }, (f.moltHistory || []).length === 0 && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: C.muted } }, "\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01"), (f.moltHistory || []).map((d, i) => /* @__PURE__ */ React.createElement("span", { key: i, style: { fontFamily: MONO, fontSize: 11.5, background: "#E4E9E2", padding: "3px 8px", borderRadius: 20 } }, fmtDate(d)))), /* @__PURE__ */ React.createElement(Btn, { size: "sm", tone: "ghost", onClick: addMoltToday }, "+ \u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A\u0E27\u0E31\u0E19\u0E19\u0E35\u0E49")), /* @__PURE__ */ React.createElement(Field, { label: "\u0E2B\u0E21\u0E32\u0E22\u0E40\u0E2B\u0E15\u0E38" }, /* @__PURE__ */ React.createElement("textarea", { style: { ...inputStyle, minHeight: 60, resize: "vertical" }, value: f.notes, onChange: (e) => set("notes", e.target.value) })), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginTop: 18 } }, /* @__PURE__ */ React.createElement("div", null, !isNew && onDelete && /* @__PURE__ */ React.createElement(Btn, { tone: "danger", onClick: async () => {
+  return /* @__PURE__ */ React.createElement(Modal, { title: isNew ? "\u0E40\u0E1E\u0E34\u0E48\u0E21\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E1B\u0E39\u0E43\u0E2B\u0E21\u0E48" : restock ? `\u0E25\u0E07\u0E1B\u0E39\u0E43\u0E2B\u0E21\u0E48 \u2014 \u0E01\u0E25\u0E48\u0E2D\u0E07 #${f.boxNumber}` : `\u0E01\u0E25\u0E48\u0E2D\u0E07 #${f.boxNumber} \xB7 \u0E23\u0E38\u0E48\u0E19\u0E17\u0E35\u0E48 ${f.batchNumber}`, onClose, wide: true }, /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" } }, /* @__PURE__ */ React.createElement(Field, { label: "\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E01\u0E25\u0E48\u0E2D\u0E07", hint: "\u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A: \u0E15\u0E31\u0E27\u0E2D\u0E31\u0E01\u0E29\u0E23\u0E41\u0E16\u0E27 + \u0E40\u0E25\u0E02\u0E0A\u0E48\u0E2D\u0E07 \u0E40\u0E0A\u0E48\u0E19 A01, B03" }, /* @__PURE__ */ React.createElement("input", { style: { ...inputStyle, ...(boxNumberError ? { border: `1.5px solid ${C.coral}` } : {}) }, value: f.boxNumber, disabled: !isNew, onChange: (e) => { set("boxNumber", e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "")); setBoxNumberError(""); }, placeholder: "\u0E40\u0E0A\u0E48\u0E19 A01" }), boxNumberError && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: C.coral, marginTop: 4, fontWeight: 600 } }, boxNumberError)), /* @__PURE__ */ React.createElement(Field, { label: "\u0E40\u0E1E\u0E28" }, /* @__PURE__ */ React.createElement("select", { style: inputStyle, value: f.sex, onChange: (e) => set("sex", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "male" }, "\u0E15\u0E31\u0E27\u0E1C\u0E39\u0E49"), /* @__PURE__ */ React.createElement("option", { value: "female" }, "\u0E15\u0E31\u0E27\u0E40\u0E21\u0E35\u0E22"))), /* @__PURE__ */ React.createElement(Field, { label: "\u0E27\u0E31\u0E19\u0E25\u0E07\u0E1B\u0E39" }, /* @__PURE__ */ React.createElement("input", { type: "date", style: inputStyle, value: f.stockDate || "", onChange: (e) => set("stockDate", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E1B\u0E31\u0E08\u0E08\u0E38\u0E1A\u0E31\u0E19 (\u0E01\u0E23\u0E31\u0E21)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: f.currentWeight, onChange: (e) => set("currentWeight", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22 (\u0E01\u0E23\u0E31\u0E21)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: f.targetWeight, onChange: (e) => set("targetWeight", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E19\u0E35\u0E49" }, /* @__PURE__ */ React.createElement("select", { style: inputStyle, value: f.goal || "", onChange: (e) => set("goal", e.target.value) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u0E44\u0E21\u0E48\u0E23\u0E30\u0E1A\u0E38"), /* @__PURE__ */ React.createElement("option", { value: "fatten" }, "\u0E02\u0E38\u0E19\u0E43\u0E2B\u0E49\u0E42\u0E15"), /* @__PURE__ */ React.createElement("option", { value: "eggs" }, "\u0E23\u0E2D\u0E44\u0E02\u0E48"), /* @__PURE__ */ React.createElement("option", { value: "molt" }, "\u0E23\u0E2D\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A"), /* @__PURE__ */ React.createElement("option", { value: "quick_sale" }, "\u0E02\u0E32\u0E22\u0E14\u0E48\u0E27\u0E19"), /* @__PURE__ */ React.createElement("option", { value: "broodstock" }, "\u0E1E\u0E48\u0E2D\u0E1E\u0E31\u0E19\u0E18\u0E38\u0E4C"))), f.sex === "female" && /* @__PURE__ */ React.createElement(Field, { label: "\u0E44\u0E02\u0E48 (%)" }, /* @__PURE__ */ React.createElement("input", { type: "number", min: "0", max: "100", style: inputStyle, value: f.eggPercent, onChange: (e) => set("eggPercent", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E1B\u0E23\u0E34\u0E21\u0E32\u0E13\u0E2D\u0E32\u0E2B\u0E32\u0E23/\u0E27\u0E31\u0E19 (\u0E01\u0E23\u0E31\u0E21)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: f.feedPerDay, onChange: (e) => set("feedPerDay", e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E15\u0E49\u0E19\u0E17\u0E38\u0E19\u0E17\u0E35\u0E48\u0E23\u0E31\u0E1A\u0E21\u0E32 (\u0E1A\u0E32\u0E17/\u0E15\u0E31\u0E27)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: f.costPerCrab, onChange: (e) => set("costPerCrab", e.target.value) }))), !restock && !isNew && /* @__PURE__ */ React.createElement(MoltHistorySection, { f, settings, onAddMolt: addMoltEntry }), /* @__PURE__ */ React.createElement(Field, { label: "\u0E2B\u0E21\u0E32\u0E22\u0E40\u0E2B\u0E15\u0E38" }, /* @__PURE__ */ React.createElement("textarea", { style: { ...inputStyle, minHeight: 60, resize: "vertical" }, value: f.notes, onChange: (e) => set("notes", e.target.value) })), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", marginTop: 18 } }, /* @__PURE__ */ React.createElement("div", null, !isNew && onDelete && /* @__PURE__ */ React.createElement(Btn, { tone: "danger", onClick: async () => {
     if (await askConfirm("\u0E25\u0E1A\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E19\u0E35\u0E49\u0E2D\u0E2D\u0E01\u0E08\u0E32\u0E01\u0E23\u0E30\u0E1A\u0E1A?")) onDelete(f.id);
   } }, "\u0E25\u0E1A\u0E01\u0E25\u0E48\u0E2D\u0E07")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", onClick: onClose }, "\u0E22\u0E01\u0E40\u0E25\u0E34\u0E01"), /* @__PURE__ */ React.createElement(Btn, { tone: "seagrass", onClick: submit }, restock ? "\u0E25\u0E07\u0E1B\u0E39\u0E43\u0E2B\u0E21\u0E48" : isNew ? "\u0E40\u0E1E\u0E34\u0E48\u0E21\u0E01\u0E25\u0E48\u0E2D\u0E07" : "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01"))));
 }
@@ -910,7 +1080,7 @@ function SettingsTab({ settings, onSave, onExport, onImport, onResetAll, counts 
       onBlur: () => setRowsText((s.layoutRows || []).join(",")),
       placeholder: "A,B,C,D"
     }
-  )), /* @__PURE__ */ React.createElement(Field, { label: "\u0E08\u0E33\u0E19\u0E27\u0E19\u0E0A\u0E48\u0E2D\u0E07\u0E15\u0E48\u0E2D\u0E41\u0E16\u0E27" }, /* @__PURE__ */ React.createElement("input", { type: "number", min: "1", style: inputStyle, value: s.layoutSlotsPerRow, onChange: (e) => setS({ ...s, layoutSlotsPerRow: Number(e.target.value) }) })))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E04\u0E48\u0E32\u0E17\u0E31\u0E48\u0E27\u0E44\u0E1B\u0E02\u0E2D\u0E07\u0E23\u0E30\u0E1A\u0E1A"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0 16px" } }, /* @__PURE__ */ React.createElement(Field, { label: "\u0E1B\u0E23\u0E34\u0E21\u0E32\u0E15\u0E23\u0E19\u0E49\u0E33\u0E43\u0E19\u0E23\u0E30\u0E1A\u0E1A (\u0E25\u0E34\u0E15\u0E23)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: s.tankVolumeLiters, onChange: (e) => setS({ ...s, tankVolumeLiters: Number(e.target.value) }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E2D\u0E31\u0E15\u0E23\u0E32\u0E01\u0E32\u0E23\u0E43\u0E2B\u0E49\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E40\u0E23\u0E34\u0E48\u0E21\u0E15\u0E49\u0E19 (%)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: s.feedRatePercent, onChange: (e) => setS({ ...s, feedRatePercent: Number(e.target.value) }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E40\u0E15\u0E37\u0E2D\u0E19\u0E15\u0E23\u0E27\u0E08\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A\u0E2B\u0E32\u0E01\u0E40\u0E01\u0E34\u0E19 (\u0E27\u0E31\u0E19)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: s.moltReminderDays, onChange: (e) => setS({ ...s, moltReminderDays: Number(e.target.value) }) })))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E1B\u0E23\u0E31\u0E1A\u0E0A\u0E48\u0E27\u0E07\u0E04\u0E48\u0E32\u0E1B\u0E01\u0E15\u0E34\u0E41\u0E25\u0E30\u0E15\u0E31\u0E27\u0E04\u0E39\u0E13\u0E04\u0E33\u0E19\u0E27\u0E13\u0E42\u0E14\u0E2A\u0E43\u0E2B\u0E49\u0E15\u0E23\u0E07\u0E01\u0E31\u0E1A\u0E1C\u0E25\u0E34\u0E15\u0E20\u0E31\u0E13\u0E11\u0E4C\u0E08\u0E23\u0E34\u0E07\u0E17\u0E35\u0E48\u0E43\u0E0A\u0E49\u0E43\u0E19\u0E1F\u0E32\u0E23\u0E4C\u0E21" }, "\u0E1E\u0E32\u0E23\u0E32\u0E21\u0E34\u0E40\u0E15\u0E2D\u0E23\u0E4C\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33"), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { style: tableStyle }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E1E\u0E32\u0E23\u0E32\u0E21\u0E34\u0E40\u0E15\u0E2D\u0E23\u0E4C"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E2B\u0E19\u0E48\u0E27\u0E22"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E15\u0E48\u0E33\u0E2A\u0E38\u0E14"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E2A\u0E39\u0E07\u0E2A\u0E38\u0E14"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E15\u0E31\u0E27\u0E04\u0E39\u0E13\u0E42\u0E14\u0E2A"))), /* @__PURE__ */ React.createElement("tbody", null, s.parameters.map((p, i) => /* @__PURE__ */ React.createElement("tr", { key: p.key }, /* @__PURE__ */ React.createElement("td", { style: tdStyle }, p.label), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, p.unit || "\u2014"), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 70 }, value: p.min, onChange: (e) => setParam(i, "min", Number(e.target.value)) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 70 }, value: p.target, onChange: (e) => setParam(i, "target", Number(e.target.value)) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 70 }, value: p.max, onChange: (e) => setParam(i, "max", Number(e.target.value)) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, p.dosable ? /* @__PURE__ */ React.createElement("input", { type: "number", step: "0.001", style: { ...inputStyle, width: 80 }, value: p.doseFactor, onChange: (e) => setParam(i, "doseFactor", Number(e.target.value)) }) : "\u2014"))))))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E43\u0E0A\u0E49\u0E14\u0E36\u0E07\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E2A\u0E20\u0E32\u0E1E\u0E2D\u0E32\u0E01\u0E32\u0E28\u0E43\u0E19\u0E41\u0E17\u0E47\u0E1A \u0E19\u0E49\u0E33 / \u0E1B\u0E31\u0E4A\u0E21" }, "\u0E15\u0E33\u0E41\u0E2B\u0E19\u0E48\u0E07\u0E1F\u0E32\u0E23\u0E4C\u0E21"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0 16px" } }, /* @__PURE__ */ React.createElement(Field, { label: "\u0E0A\u0E37\u0E48\u0E2D\u0E2A\u0E16\u0E32\u0E19\u0E17\u0E35\u0E48/\u0E08\u0E31\u0E07\u0E2B\u0E27\u0E31\u0E14" }, /* @__PURE__ */ React.createElement("input", { style: inputStyle, value: s.farmLocationName || "", onChange: (e) => setS({ ...s, farmLocationName: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E25\u0E30\u0E15\u0E34\u0E08\u0E39\u0E14 (lat)" }, /* @__PURE__ */ React.createElement("input", { type: "number", step: "any", style: inputStyle, value: s.farmLat, onChange: (e) => setS({ ...s, farmLat: Number(e.target.value) }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E25\u0E2D\u0E07\u0E08\u0E34\u0E08\u0E39\u0E14 (lon)" }, /* @__PURE__ */ React.createElement("input", { type: "number", step: "any", style: inputStyle, value: s.farmLon, onChange: (e) => setS({ ...s, farmLon: Number(e.target.value) }) }))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: C.muted, marginTop: 8 } }, "\u0E40\u0E01\u0E47\u0E1A\u0E1E\u0E34\u0E01\u0E31\u0E14 lat/lon \u0E44\u0E14\u0E49\u0E08\u0E32\u0E01 Google Maps \u2014 \u0E01\u0E14\u0E04\u0E49\u0E32\u0E07\u0E1A\u0E19\u0E41\u0E1C\u0E19\u0E17\u0E35\u0E48\u0E15\u0E33\u0E41\u0E2B\u0E19\u0E48\u0E07\u0E1F\u0E32\u0E23\u0E4C\u0E21 \u0E15\u0E31\u0E27\u0E40\u0E25\u0E02\u0E17\u0E35\u0E48\u0E02\u0E36\u0E49\u0E19\u0E15\u0E49\u0E19 URL \u0E04\u0E37\u0E2D\u0E1E\u0E34\u0E01\u0E31\u0E14")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center" } }, /* @__PURE__ */ React.createElement(Btn, { tone: "seagrass", disabled: saveState === "saving", onClick: handleSave }, saveState === "saving" ? "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u2026" : "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E01\u0E32\u0E23\u0E15\u0E31\u0E49\u0E07\u0E04\u0E48\u0E32"), /* @__PURE__ */ React.createElement(SaveStatusText, { state: saveState })), /* @__PURE__ */ React.createElement(DataManagementCard, { onExport, onImport, onResetAll, counts }), /* @__PURE__ */ React.createElement(ChangePasswordCard, null));
+  )), /* @__PURE__ */ React.createElement(Field, { label: "\u0E08\u0E33\u0E19\u0E27\u0E19\u0E0A\u0E48\u0E2D\u0E07\u0E15\u0E48\u0E2D\u0E41\u0E16\u0E27" }, /* @__PURE__ */ React.createElement("input", { type: "number", min: "1", style: inputStyle, value: s.layoutSlotsPerRow, onChange: (e) => setS({ ...s, layoutSlotsPerRow: Number(e.target.value) }) })))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E04\u0E48\u0E32\u0E17\u0E31\u0E48\u0E27\u0E44\u0E1B\u0E02\u0E2D\u0E07\u0E23\u0E30\u0E1A\u0E1A"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0 16px" } }, /* @__PURE__ */ React.createElement(Field, { label: "\u0E1B\u0E23\u0E34\u0E21\u0E32\u0E15\u0E23\u0E19\u0E49\u0E33\u0E43\u0E19\u0E23\u0E30\u0E1A\u0E1A (\u0E25\u0E34\u0E15\u0E23)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: s.tankVolumeLiters, onChange: (e) => setS({ ...s, tankVolumeLiters: Number(e.target.value) }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E2D\u0E31\u0E15\u0E23\u0E32\u0E01\u0E32\u0E23\u0E43\u0E2B\u0E49\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E40\u0E23\u0E34\u0E48\u0E21\u0E15\u0E49\u0E19 (%)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: s.feedRatePercent, onChange: (e) => setS({ ...s, feedRatePercent: Number(e.target.value) }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E40\u0E15\u0E37\u0E2D\u0E19\u0E15\u0E23\u0E27\u0E08\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A\u0E2B\u0E32\u0E01\u0E40\u0E01\u0E34\u0E19 (\u0E27\u0E31\u0E19)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: s.moltReminderDays, onChange: (e) => setS({ ...s, moltReminderDays: Number(e.target.value) }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E40\u0E1E\u0E34\u0E48\u0E21\u0E02\u0E31\u0E49\u0E19\u0E15\u0E48\u0E33/\u0E04\u0E23\u0E31\u0E49\u0E07\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A (%)", hint: "\u0E43\u0E0A\u0E49\u0E40\u0E17\u0E35\u0E22\u0E1A\u0E01\u0E31\u0E1A\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E01\u0E48\u0E2D\u0E19\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A\u0E41\u0E15\u0E48\u0E25\u0E30\u0E04\u0E23\u0E31\u0E49\u0E07" }, /* @__PURE__ */ React.createElement("input", { type: "number", step: "0.5", min: "0", style: inputStyle, value: s.moltStandardGrowthPercent, onChange: (e) => setS({ ...s, moltStandardGrowthPercent: Number(e.target.value) }) })))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E1B\u0E23\u0E31\u0E1A\u0E0A\u0E48\u0E27\u0E07\u0E04\u0E48\u0E32\u0E1B\u0E01\u0E15\u0E34\u0E41\u0E25\u0E30\u0E15\u0E31\u0E27\u0E04\u0E39\u0E13\u0E04\u0E33\u0E19\u0E27\u0E13\u0E42\u0E14\u0E2A\u0E43\u0E2B\u0E49\u0E15\u0E23\u0E07\u0E01\u0E31\u0E1A\u0E1C\u0E25\u0E34\u0E15\u0E20\u0E31\u0E13\u0E11\u0E4C\u0E08\u0E23\u0E34\u0E07\u0E17\u0E35\u0E48\u0E43\u0E0A\u0E49\u0E43\u0E19\u0E1F\u0E32\u0E23\u0E4C\u0E21" }, "\u0E1E\u0E32\u0E23\u0E32\u0E21\u0E34\u0E40\u0E15\u0E2D\u0E23\u0E4C\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33"), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { style: tableStyle }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E1E\u0E32\u0E23\u0E32\u0E21\u0E34\u0E40\u0E15\u0E2D\u0E23\u0E4C"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E2B\u0E19\u0E48\u0E27\u0E22"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E15\u0E48\u0E33\u0E2A\u0E38\u0E14"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E2A\u0E39\u0E07\u0E2A\u0E38\u0E14"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E15\u0E31\u0E27\u0E04\u0E39\u0E13\u0E42\u0E14\u0E2A"))), /* @__PURE__ */ React.createElement("tbody", null, s.parameters.map((p, i) => /* @__PURE__ */ React.createElement("tr", { key: p.key }, /* @__PURE__ */ React.createElement("td", { style: tdStyle }, p.label), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, p.unit || "\u2014"), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 70 }, value: p.min, onChange: (e) => setParam(i, "min", Number(e.target.value)) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 70 }, value: p.target, onChange: (e) => setParam(i, "target", Number(e.target.value)) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 70 }, value: p.max, onChange: (e) => setParam(i, "max", Number(e.target.value)) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, p.dosable ? /* @__PURE__ */ React.createElement("input", { type: "number", step: "0.001", style: { ...inputStyle, width: 80 }, value: p.doseFactor, onChange: (e) => setParam(i, "doseFactor", Number(e.target.value)) }) : "\u2014"))))))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E43\u0E0A\u0E49\u0E14\u0E36\u0E07\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E2A\u0E20\u0E32\u0E1E\u0E2D\u0E32\u0E01\u0E32\u0E28\u0E43\u0E19\u0E41\u0E17\u0E47\u0E1A \u0E19\u0E49\u0E33 / \u0E1B\u0E31\u0E4A\u0E21" }, "\u0E15\u0E33\u0E41\u0E2B\u0E19\u0E48\u0E07\u0E1F\u0E32\u0E23\u0E4C\u0E21"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0 16px" } }, /* @__PURE__ */ React.createElement(Field, { label: "\u0E0A\u0E37\u0E48\u0E2D\u0E2A\u0E16\u0E32\u0E19\u0E17\u0E35\u0E48/\u0E08\u0E31\u0E07\u0E2B\u0E27\u0E31\u0E14" }, /* @__PURE__ */ React.createElement("input", { style: inputStyle, value: s.farmLocationName || "", onChange: (e) => setS({ ...s, farmLocationName: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E25\u0E30\u0E15\u0E34\u0E08\u0E39\u0E14 (lat)" }, /* @__PURE__ */ React.createElement("input", { type: "number", step: "any", style: inputStyle, value: s.farmLat, onChange: (e) => setS({ ...s, farmLat: Number(e.target.value) }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E25\u0E2D\u0E07\u0E08\u0E34\u0E08\u0E39\u0E14 (lon)" }, /* @__PURE__ */ React.createElement("input", { type: "number", step: "any", style: inputStyle, value: s.farmLon, onChange: (e) => setS({ ...s, farmLon: Number(e.target.value) }) }))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: C.muted, marginTop: 8 } }, "\u0E40\u0E01\u0E47\u0E1A\u0E1E\u0E34\u0E01\u0E31\u0E14 lat/lon \u0E44\u0E14\u0E49\u0E08\u0E32\u0E01 Google Maps \u2014 \u0E01\u0E14\u0E04\u0E49\u0E32\u0E07\u0E1A\u0E19\u0E41\u0E1C\u0E19\u0E17\u0E35\u0E48\u0E15\u0E33\u0E41\u0E2B\u0E19\u0E48\u0E07\u0E1F\u0E32\u0E23\u0E4C\u0E21 \u0E15\u0E31\u0E27\u0E40\u0E25\u0E02\u0E17\u0E35\u0E48\u0E02\u0E36\u0E49\u0E19\u0E15\u0E49\u0E19 URL \u0E04\u0E37\u0E2D\u0E1E\u0E34\u0E01\u0E31\u0E14")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center" } }, /* @__PURE__ */ React.createElement(Btn, { tone: "seagrass", disabled: saveState === "saving", onClick: handleSave }, saveState === "saving" ? "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u2026" : "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E01\u0E32\u0E23\u0E15\u0E31\u0E49\u0E07\u0E04\u0E48\u0E32"), /* @__PURE__ */ React.createElement(SaveStatusText, { state: saveState })), /* @__PURE__ */ React.createElement(DataManagementCard, { onExport, onImport, onResetAll, counts }), /* @__PURE__ */ React.createElement(ChangePasswordCard, null));
 }
 const TABS = [
   { id: "dashboard", label: "\u0E41\u0E14\u0E0A\u0E1A\u0E2D\u0E23\u0E4C\u0E14" },
@@ -1188,6 +1358,46 @@ function App() {
       clearTimeout(timeoutId);
     };
   }, []);
+  const [lastSynced, setLastSynced] = useState(null);
+  const editingOpenRef = useRef(false);
+  useEffect(() => {
+    editingOpenRef.current = !!(openBox || showNewBox || harvestTarget);
+  }, [openBox, showNewBox, harvestTarget]);
+  // Auto-refresh: every few seconds, quietly pull the latest data from the
+  // shared backend so every device stays in sync without anyone having to
+  // close/reopen the app or hit refresh. Skipped while a form is open so it
+  // never overwrites something someone is actively typing.
+  useEffect(() => {
+    if (!loaded) return;
+    let stopped = false;
+    const poll = async () => {
+      if (editingOpenRef.current) return;
+      try {
+        const [b, h, w, s] = await Promise.all([
+          storeGetCollection(COL_BOXES),
+          storeGetCollection(COL_HISTORY),
+          storeGetCollection(COL_WATER),
+          storeGetSettings()
+        ]);
+        if (stopped) return;
+        setBoxes((prev) => JSON.stringify(prev) === JSON.stringify(b) ? prev : b);
+        setHistory((prev) => JSON.stringify(prev) === JSON.stringify(h) ? prev : h);
+        setWaterLogs((prev) => JSON.stringify(prev) === JSON.stringify(w) ? prev : w);
+        setSettings((prev) => {
+          const next = s && s.parameters ? { ...DEFAULT_SETTINGS, ...s, parameters: s.parameters } : DEFAULT_SETTINGS;
+          return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
+        });
+        setLastSynced(/* @__PURE__ */ new Date());
+      } catch (e) {
+        console.error("crabfarm: background sync failed", e);
+      }
+    };
+    const interval = setInterval(poll, 15e3);
+    return () => {
+      stopped = true;
+      clearInterval(interval);
+    };
+  }, [loaded]);
   const persistBoxes = useCallback((next, changedIds) => {
     setBoxes(next);
     storeSetCollection(COL_BOXES, next, changedIds);
@@ -1302,7 +1512,8 @@ function App() {
       if (b.targetWeight && Number(b.currentWeight) >= Number(b.targetWeight)) {
         list.push({ id: `wt-${b.id}`, tone: "danger", scope: "box", boxNumber: b.boxNumber, text: `\u0E01\u0E25\u0E48\u0E2D\u0E07 #${b.boxNumber} \u2014 \u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E16\u0E36\u0E07\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22\u0E41\u0E25\u0E49\u0E27 (${num(b.currentWeight)}g)` });
       }
-      const lastMolt = b.moltHistory && b.moltHistory.length ? b.moltHistory[b.moltHistory.length - 1] : null;
+      const lastMoltEntry = b.moltHistory && b.moltHistory.length ? b.moltHistory[b.moltHistory.length - 1] : null;
+      const lastMolt = lastMoltEntry ? moltEntryDate(lastMoltEntry) : null;
       if (lastMolt) {
         const d = daysBetween(lastMolt, todayStr());
         if (d >= settings.moltReminderDays) {
@@ -1376,7 +1587,7 @@ function App() {
       }
     },
     t.label
-  )), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.6 } }, activeBoxes.length, " \u0E01\u0E25\u0E48\u0E2D\u0E07\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07 \xB7 ", emptyBoxes.length, " \u0E01\u0E25\u0E48\u0E2D\u0E07\u0E27\u0E48\u0E32\u0E07")), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { position: "sticky", top: 0, zIndex: 20, background: "rgba(238,242,237,0.92)", backdropFilter: "blur(6px)", padding: "16px 26px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${C.line}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: DISPLAY, fontWeight: 700, fontSize: 21, color: C.ink } }, (_a = TABS.find((t) => t.id === tab)) == null ? void 0 : _a.label), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: C.muted, fontFamily: MONO } }, (/* @__PURE__ */ new Date()).toLocaleDateString("th-TH", { weekday: "short", day: "numeric", month: "short", year: "numeric" })), /* @__PURE__ */ React.createElement("button", { onClick: () => { setTab("boxes"); setBoxViewMode("list"); setTimeout(() => { const el = document.getElementById("crabfarm-search-input"); if (el) el.focus(); }, 50); }, title: "\u0E04\u0E49\u0E19\u0E2B\u0E32\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E1B\u0E39", style: { background: C.card, border: `1px solid ${C.line}`, borderRadius: 8, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.ink } }, /* @__PURE__ */ React.createElement(IconSearch, null)), /* @__PURE__ */ React.createElement("div", { style: { position: "relative" } }, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowAlerts((v) => !v), style: { position: "relative", background: C.card, border: `1px solid ${C.line}`, borderRadius: 8, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.ink } }, /* @__PURE__ */ React.createElement(IconBell, null), alerts.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", top: -4, right: -4, background: C.coral, color: "#fff", fontSize: 10, fontWeight: 700, borderRadius: 10, minWidth: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px" } }, alerts.length)), showAlerts && /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", right: 0, top: 42, width: 320, background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, boxShadow: "0 12px 30px rgba(11,35,51,0.18)", padding: 10, zIndex: 30, maxHeight: 340, overflowY: "auto" } }, alerts.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: C.muted, padding: 8 } }, "\u0E44\u0E21\u0E48\u0E21\u0E35\u0E01\u0E32\u0E23\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19"), alerts.map((a) => /* @__PURE__ */ React.createElement("div", { key: a.id, style: { padding: "8px 6px", borderBottom: `1px solid ${C.line}`, fontSize: 12.5 } }, /* @__PURE__ */ React.createElement(Pill, { tone: a.tone }, a.tone === "danger" ? "\u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E08\u0E31\u0E1A" : "\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19"), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 5 } }, a.text))))), /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", onClick: handleLogout }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 6 } }, /* @__PURE__ */ React.createElement(IconLogout, { size: 14 }), "\u0E2D\u0E2D\u0E01\u0E08\u0E32\u0E01\u0E23\u0E30\u0E1A\u0E1A")), tab === "boxes" && /* @__PURE__ */ React.createElement(Btn, { tone: "coral", size: "sm", onClick: () => setShowNewBox(true) }, "+ \u0E40\u0E1E\u0E34\u0E48\u0E21\u0E01\u0E25\u0E48\u0E2D\u0E07"))), /* @__PURE__ */ React.createElement("div", { style: { padding: 26 } }, tab === "dashboard" && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 20 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 14, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14", value: boxes.length }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07\u0E2D\u0E22\u0E39\u0E48", value: activeBoxes.length, tone: "seagrass" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E27\u0E48\u0E32\u0E07", value: emptyBoxes.length }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E23\u0E27\u0E21 (biomass)", value: `${num(totalBiomass)} g`, tone: "water" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E33\u0E44\u0E23\u0E2A\u0E30\u0E2A\u0E21\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14", value: `${money(totalProfit)} \u0E1A.`, tone: totalProfit >= 0 ? "seagrass" : "coral" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19\u0E17\u0E35\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E14\u0E33\u0E40\u0E19\u0E34\u0E19\u0E01\u0E32\u0E23", value: alerts.length, tone: alerts.length ? "coral" : "ink" })), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19"), alerts.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: C.muted } }, "\u0E44\u0E21\u0E48\u0E21\u0E35\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E17\u0E35\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E14\u0E33\u0E40\u0E19\u0E34\u0E19\u0E01\u0E32\u0E23\u0E15\u0E2D\u0E19\u0E19\u0E35\u0E49 \u{1F389}"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }, alerts.map((a) => /* @__PURE__ */ React.createElement("div", { key: a.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: a.tone === "danger" ? "rgba(226,96,58,0.08)" : "rgba(201,138,46,0.08)", borderRadius: 8 } }, /* @__PURE__ */ React.createElement(Pill, { tone: a.tone }, a.tone === "danger" ? "\u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E08\u0E31\u0E1A" : "\u0E40\u0E15\u0E37\u0E2D\u0E19"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13 } }, a.text))))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E20\u0E32\u0E1E\u0E23\u0E27\u0E21\u0E0A\u0E48\u0E27\u0E07\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33\u0E25\u0E48\u0E32\u0E2A\u0E38\u0E14" }, "\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33"), waterLogs.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: C.muted } }, '\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E01\u0E32\u0E23\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33 \u2014 \u0E44\u0E1B\u0E17\u0E35\u0E48\u0E41\u0E17\u0E47\u0E1A "\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33" \u0E40\u0E1E\u0E37\u0E48\u0E2D\u0E40\u0E23\u0E34\u0E48\u0E21\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01') : /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "0 24px" } }, settings.parameters.map((p) => {
+  )), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.6 } }, activeBoxes.length, " \u0E01\u0E25\u0E48\u0E2D\u0E07\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07 \xB7 ", emptyBoxes.length, " \u0E01\u0E25\u0E48\u0E2D\u0E07\u0E27\u0E48\u0E32\u0E07")), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { position: "sticky", top: 0, zIndex: 20, background: "rgba(238,242,237,0.92)", backdropFilter: "blur(6px)", padding: "16px 26px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${C.line}` } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: DISPLAY, fontWeight: 700, fontSize: 21, color: C.ink } }, (_a = TABS.find((t) => t.id === tab)) == null ? void 0 : _a.label), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: C.muted, fontFamily: MONO, display: "flex", alignItems: "center", gap: 6 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 7, height: 7, borderRadius: "50%", background: C.seagrass, display: "inline-block" }, title: "\u0E0B\u0E34\u0E07\u0E01\u0E4C\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E2D\u0E31\u0E15\u0E42\u0E19\u0E21\u0E31\u0E15\u0E34\u0E17\u0E38\u0E01 15 \u0E27\u0E34\u0E19\u0E32\u0E17\u0E35" }), lastSynced ? `\u0E2D\u0E31\u0E1B\u0E40\u0E14\u0E15\u0E25\u0E48\u0E32\u0E2A\u0E38\u0E14 ${lastSynced.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : (/* @__PURE__ */ new Date()).toLocaleDateString("th-TH", { weekday: "short", day: "numeric", month: "short", year: "numeric" })), /* @__PURE__ */ React.createElement("button", { onClick: () => { setTab("boxes"); setBoxViewMode("list"); setTimeout(() => { const el = document.getElementById("crabfarm-search-input"); if (el) el.focus(); }, 50); }, title: "\u0E04\u0E49\u0E19\u0E2B\u0E32\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E1B\u0E39", style: { background: C.card, border: `1px solid ${C.line}`, borderRadius: 8, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.ink } }, /* @__PURE__ */ React.createElement(IconSearch, null)), /* @__PURE__ */ React.createElement("div", { style: { position: "relative" } }, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowAlerts((v) => !v), style: { position: "relative", background: C.card, border: `1px solid ${C.line}`, borderRadius: 8, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.ink } }, /* @__PURE__ */ React.createElement(IconBell, null), alerts.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", top: -4, right: -4, background: C.coral, color: "#fff", fontSize: 10, fontWeight: 700, borderRadius: 10, minWidth: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px" } }, alerts.length)), showAlerts && /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", right: 0, top: 42, width: 320, background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, boxShadow: "0 12px 30px rgba(11,35,51,0.18)", padding: 10, zIndex: 30, maxHeight: 340, overflowY: "auto" } }, alerts.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: C.muted, padding: 8 } }, "\u0E44\u0E21\u0E48\u0E21\u0E35\u0E01\u0E32\u0E23\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19"), alerts.map((a) => /* @__PURE__ */ React.createElement("div", { key: a.id, style: { padding: "8px 6px", borderBottom: `1px solid ${C.line}`, fontSize: 12.5 } }, /* @__PURE__ */ React.createElement(Pill, { tone: a.tone }, a.tone === "danger" ? "\u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E08\u0E31\u0E1A" : "\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19"), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 5 } }, a.text))))), /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", onClick: handleLogout }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 6 } }, /* @__PURE__ */ React.createElement(IconLogout, { size: 14 }), "\u0E2D\u0E2D\u0E01\u0E08\u0E32\u0E01\u0E23\u0E30\u0E1A\u0E1A")), tab === "boxes" && /* @__PURE__ */ React.createElement(Btn, { tone: "coral", size: "sm", onClick: () => setShowNewBox(true) }, "+ \u0E40\u0E1E\u0E34\u0E48\u0E21\u0E01\u0E25\u0E48\u0E2D\u0E07"))), /* @__PURE__ */ React.createElement("div", { style: { padding: 26 } }, tab === "dashboard" && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 20 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 14, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14", value: boxes.length }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07\u0E2D\u0E22\u0E39\u0E48", value: activeBoxes.length, tone: "seagrass" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E27\u0E48\u0E32\u0E07", value: emptyBoxes.length }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E23\u0E27\u0E21 (biomass)", value: `${num(totalBiomass)} g`, tone: "water" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E33\u0E44\u0E23\u0E2A\u0E30\u0E2A\u0E21\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14", value: `${money(totalProfit)} \u0E1A.`, tone: totalProfit >= 0 ? "seagrass" : "coral" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19\u0E17\u0E35\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E14\u0E33\u0E40\u0E19\u0E34\u0E19\u0E01\u0E32\u0E23", value: alerts.length, tone: alerts.length ? "coral" : "ink" })), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19"), alerts.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: C.muted } }, "\u0E44\u0E21\u0E48\u0E21\u0E35\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E17\u0E35\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E14\u0E33\u0E40\u0E19\u0E34\u0E19\u0E01\u0E32\u0E23\u0E15\u0E2D\u0E19\u0E19\u0E35\u0E49 \u{1F389}"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }, alerts.map((a) => /* @__PURE__ */ React.createElement("div", { key: a.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: a.tone === "danger" ? "rgba(226,96,58,0.08)" : "rgba(201,138,46,0.08)", borderRadius: 8 } }, /* @__PURE__ */ React.createElement(Pill, { tone: a.tone }, a.tone === "danger" ? "\u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E08\u0E31\u0E1A" : "\u0E40\u0E15\u0E37\u0E2D\u0E19"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13 } }, a.text))))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E20\u0E32\u0E1E\u0E23\u0E27\u0E21\u0E0A\u0E48\u0E27\u0E07\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33\u0E25\u0E48\u0E32\u0E2A\u0E38\u0E14" }, "\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33"), waterLogs.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: C.muted } }, '\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E01\u0E32\u0E23\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33 \u2014 \u0E44\u0E1B\u0E17\u0E35\u0E48\u0E41\u0E17\u0E47\u0E1A "\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33" \u0E40\u0E1E\u0E37\u0E48\u0E2D\u0E40\u0E23\u0E34\u0E48\u0E21\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01') : /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "0 24px" } }, settings.parameters.map((p) => {
     var _a2;
     return /* @__PURE__ */ React.createElement(GaugeBar, { key: p.key, param: p, value: (_a2 = waterLogs[waterLogs.length - 1].readings[p.key]) != null ? _a2 : null });
   })))), tab === "boxes" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, background: "#E4E9E2", borderRadius: 10, padding: 3 } }, /* @__PURE__ */ React.createElement(
@@ -1438,7 +1649,7 @@ function App() {
   ))), showNewBox && /* @__PURE__ */ React.createElement(BoxFormModal, { onSave: saveBox, onClose: () => {
     setShowNewBox(false);
     setPrefillBoxNumber("");
-  }, prefillBoxNumber }), openBox && /* @__PURE__ */ React.createElement(BoxFormModal, { initial: openBox, onSave: saveBox, onClose: () => setOpenBox(null), onDelete: deleteBox, nextBatchFor }), harvestTarget && /* @__PURE__ */ React.createElement(HarvestModal, { box: harvestTarget, onConfirm: confirmHarvest, onClose: () => setHarvestTarget(null) }), confirmDialog && /* @__PURE__ */ React.createElement(ConfirmModal, { message: confirmDialog.message, onYes: () => {
+  }, prefillBoxNumber, allBoxes: boxes, settings }), openBox && /* @__PURE__ */ React.createElement(BoxFormModal, { initial: openBox, onSave: saveBox, onClose: () => setOpenBox(null), onDelete: deleteBox, nextBatchFor, allBoxes: boxes, settings }), harvestTarget && /* @__PURE__ */ React.createElement(HarvestModal, { box: harvestTarget, onConfirm: confirmHarvest, onClose: () => setHarvestTarget(null) }), confirmDialog && /* @__PURE__ */ React.createElement(ConfirmModal, { message: confirmDialog.message, onYes: () => {
     confirmDialog.resolve(true);
     setConfirmDialog(null);
   }, onNo: () => {
