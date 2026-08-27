@@ -407,7 +407,7 @@ function Pill({ children, tone = "muted" }) {
   return /* @__PURE__ */ React.createElement("span", { style: { background: t.bg, color: t.fg, fontSize: 11.5, fontWeight: 700, padding: "3px 9px", borderRadius: 20, letterSpacing: 0.2 } }, children);
 }
 function Field({ label, children, hint }) {
-  return /* @__PURE__ */ React.createElement("label", { style: { display: "block", marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: C.brine, marginBottom: 4 } }, label), children, hint && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 3 } }, hint));
+  return /* @__PURE__ */ React.createElement("label", { style: { display: "block", marginBottom: 12, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, fontWeight: 700, color: C.brine, marginBottom: 4 } }, label), children, hint && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 3 } }, hint));
 }
 const inputStyle = {
   width: "100%",
@@ -808,12 +808,12 @@ function MoltHistorySection({ f, settings, onAddMolt }) {
       )}
       <div style={{ background: "#F6F8F5", border: `1px solid ${C.line}`, borderRadius: 8, padding: 12 }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: C.brine, marginBottom: 8 }}>+ บันทึกลอกคราบใหม่</div>
-        <div className="cf-grid-2col" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "0 12px" }}>
+        <div className="cf-grid-molt" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "0 12px" }}>
           <Field label="วันที่ลอกคราบ">
-            <input type="date" className="cf-date-field" style={inputStyle} value={draft.date} onChange={(e) => setDraftField("date", e.target.value)} />
+            <input type="date" className="cf-date-field" style={{ ...inputStyle, minWidth: 0 }} value={draft.date} onChange={(e) => setDraftField("date", e.target.value)} />
           </Field>
           <Field label="น้ำหนักหลังลอกคราบ (กรัม)">
-            <input type="number" style={inputStyle} value={draft.weight} placeholder="เช่น 250" onChange={(e) => setDraftField("weight", e.target.value)} />
+            <input type="number" style={{ ...inputStyle, minWidth: 0 }} value={draft.weight} placeholder="เช่น 250" onChange={(e) => setDraftField("weight", e.target.value)} />
           </Field>
         </div>
         <div style={{ display: "flex", gap: 18, marginBottom: 10, flexWrap: "wrap" }}>
@@ -1604,6 +1604,8 @@ function App() {
         .cf-boxnumber-field, .cf-date-field { color: ${C.coral} !important; font-weight: 700; }
         .cf-boxnumber-field:focus, .cf-date-field:focus { color: ${C.text} !important; font-weight: 500; }
         .cf-boxnumber-field:disabled { color: ${C.coral} !important; -webkit-text-fill-color: ${C.coral}; opacity: 1; }
+        input[type="date"] { min-width: 0; }
+        .cf-grid-2col > *, .cf-grid-3col > *, .cf-grid-molt > *, .cf-grid-water > *, .cf-grid-feed > * { min-width: 0; }
 
         @media (max-width: 860px) {
           .cf-sidebar {
@@ -1626,7 +1628,7 @@ function App() {
           .cf-topbar-actions { gap: 8px !important; width: 100%; justify-content: space-between; }
           .cf-sync-text { display: none !important; }
           .cf-content { padding: 14px !important; }
-          .cf-grid-water, .cf-grid-feed, .cf-grid-2col, .cf-grid-3col {
+          .cf-grid-water, .cf-grid-feed, .cf-grid-2col, .cf-grid-3col, .cf-grid-molt {
             grid-template-columns: 1fr !important;
           }
           .cf-toolbar-row { justify-content: flex-start !important; }
