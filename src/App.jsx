@@ -1077,7 +1077,8 @@ function WaterTab({ waterLogs, settings, onAddLog, onUpdateSettings }) {
       }
       if (!data.text) throw new Error("\u0E44\u0E21\u0E48\u0E44\u0E14\u0E49\u0E23\u0E31\u0E1A\u0E1C\u0E25\u0E25\u0E31\u0E1E\u0E18\u0E4C\u0E08\u0E32\u0E01 AI");
       const cleaned = data.text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(cleaned);
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : cleaned);
       const filled = [];
       setReadings((r) => {
         const next = { ...r };
@@ -1096,7 +1097,8 @@ function WaterTab({ waterLogs, settings, onAddLog, onUpdateSettings }) {
       }
     } catch (err) {
       console.error(err);
-      setAiError("\u0E2D\u0E48\u0E32\u0E19\u0E04\u0E48\u0E32\u0E08\u0E32\u0E01\u0E20\u0E32\u0E1E\u0E44\u0E21\u0E48\u0E2A\u0E33\u0E40\u0E23\u0E47\u0E08 \u0E25\u0E2D\u0E07\u0E16\u0E48\u0E32\u0E22\u0E43\u0E2B\u0E21\u0E48\u0E43\u0E2B\u0E49\u0E0A\u0E31\u0E14\u0E02\u0E36\u0E49\u0E19 \u0E2B\u0E23\u0E37\u0E2D\u0E01\u0E23\u0E2D\u0E01\u0E40\u0E2D\u0E07\u0E41\u0E17\u0E19");
+      const detail = (err && err.message) || String(err);
+      setAiError(`\u0E2D\u0E48\u0E32\u0E19\u0E04\u0E48\u0E32\u0E08\u0E32\u0E01\u0E20\u0E32\u0E1E\u0E44\u0E21\u0E48\u0E2A\u0E33\u0E40\u0E23\u0E47\u0E08: ${detail}`);
     } finally {
       setAiLoading(false);
     }
