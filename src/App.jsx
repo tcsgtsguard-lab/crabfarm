@@ -304,6 +304,7 @@ function mergeSettings(s) {
   };
 }
 const CORE_PARAM_KEYS = ["salinity", "ph", "temp", "ammonia", "nitrite", "alkalinity", "calcium", "do", "waterLevel"];
+const DISPLAY = "'Space Grotesk', 'Segoe UI', sans-serif";
 const BODY = "'IBM Plex Sans', 'Segoe UI', sans-serif";
 const MONO = "'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace";
 const C = {
