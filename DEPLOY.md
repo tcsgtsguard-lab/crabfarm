@@ -107,6 +107,11 @@ git push -u origin main
 2. หลัง login เข้าหน้า Dashboard กด **Add New...** → **Project**
 3. จะเห็นรายชื่อ repository ของคุณ — เลือก `andaman-crab-farm` แล้วกด **Import**
 4. Vercel จะตรวจจับว่าเป็นโปรเจกต์ Vite เองอัตโนมัติ (Framework Preset: Vite) — ไม่ต้องแก้อะไร
+4.1. **(ถ้าจะใช้ฟีเจอร์ "📷 ถ่ายรูปให้ AI อ่านค่าน้ำ")** ก่อนกด Deploy ให้เปิด **Environment Variables** (อยู่ในหน้าเดียวกันตอน Import) แล้วเพิ่ม:
+   - Key: `GEMINI_API_KEY`
+   - Value: API key ฟรีจาก **Google AI Studio** — ไปที่ https://aistudio.google.com/apikey กด **Create API key** (ไม่ต้องผูกบัตรเครดิต ใช้ฟรีได้เลย มีโควต้าต่อวัน/ต่อนาทีให้)
+
+   ถ้าข้ามขั้นตอนนี้ แอปยังใช้งานส่วนอื่นได้ปกติ แค่ปุ่ม "ถ่ายรูปให้ AI อ่านค่า" จะขึ้น error แจ้งว่ายังไม่ได้ตั้งค่า — กลับมาเพิ่ม env var แล้ว redeploy ทีหลังได้เสมอ (ไปที่ Project > Settings > Environment Variables) ในแอปเองก็มีปุ่มลิงก์ไปสมัครฟรีให้กดตรง ๆ ได้เลยตรงหน้า "บันทึกค่าน้ำ"
 5. กด **Deploy**
 6. รอประมาณ 1-2 นาที เมื่อเสร็จจะมีหน้าจอแสดงลิงก์เว็บไซต์ เช่น
    `https://andaman-crab-farm.vercel.app`
