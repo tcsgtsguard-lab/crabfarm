@@ -6,7 +6,7 @@
 // แล้วตั้งค่า Environment Variable ชื่อ GEMINI_API_KEY ใน Vercel Project Settings
 // (Settings > Environment Variables) ก่อน ไม่งั้นฟังก์ชันนี้จะตอบ error กลับไป
 
-const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = "gemini-3.6-flash";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
