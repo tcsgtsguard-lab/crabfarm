@@ -2,7 +2,7 @@
 // รับข้อความ (ไม่มีรูป) แล้วยิงไปที่ Google Gemini API เพื่อสรุปรายงาน/ตอบคำถามผู้ช่วยฟาร์ม
 // ใช้ GEMINI_API_KEY (หรือ apiKeyOverride ที่ client ส่งมา) เหมือนกับ api/analyze-water.js
 
-const GEMINI_MODEL = "gemini-3.6-flash";
+const GEMINI_MODEL = "gemini-3.5-flash-lite";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
