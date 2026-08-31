@@ -381,6 +381,42 @@ function moltGrowthStats(moltHistory, initialWeight, standardPercent) {
 }
 const money = (n) => n === "" || n === null || n === void 0 || isNaN(n) ? "\u2014" : Number(n).toLocaleString("th-TH", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const num = (n, d = 0) => n === "" || n === null || n === void 0 || isNaN(n) ? "\u2014" : Number(n).toLocaleString("th-TH", { minimumFractionDigits: d, maximumFractionDigits: d });
+function resizeImageToBase64(file, maxDimension = 1600, quality = 0.85) {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        let { width, height } = img;
+        if (width > maxDimension || height > maxDimension) {
+          if (width > height) {
+            height = Math.round(height * (maxDimension / width));
+            width = maxDimension;
+          } else {
+            width = Math.round(width * (maxDimension / height));
+            height = maxDimension;
+          }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL("image/jpeg", quality);
+        URL.revokeObjectURL(objectUrl);
+        resolve({ base64Data: dataUrl.split(",")[1], mediaType: "image/jpeg" });
+      } catch (err) {
+        URL.revokeObjectURL(objectUrl);
+        reject(err);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("\u0E44\u0E21\u0E48\u0E2A\u0E32\u0E21\u0E32\u0E23\u0E16\u0E40\u0E1B\u0E34\u0E14\u0E44\u0E1F\u0E25\u0E4C\u0E23\u0E39\u0E1B\u0E19\u0E35\u0E49\u0E44\u0E14\u0E49"));
+    };
+    img.src = objectUrl;
+  });
+}
 function crabCategory(box) {
   if (box.sex === "female") return box.goal === "eggs" ? "eggs" : "female";
   return "male";
@@ -666,7 +702,7 @@ function BoxCard({ box, onOpen, onQuickHarvest, onQuickDeath, moltReminderDays }
   );
 }
 function FloorPlanCell({ code, box, moltReminderDays, onOpen, onQuickHarvest, onAddAt }) {
-  if (!box) {
+  if (!box || box.status === "empty") {
     return /* @__PURE__ */ React.createElement(
       "button",
       {
@@ -1074,13 +1110,7 @@ function WaterTab({ waterLogs, settings, onAddLog, onUpdateSettings }) {
     setAiError("");
     setAiFilledKeys([]);
     try {
-      const base64Data = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result).split(",")[1]);
-        reader.onerror = () => reject(new Error("\u0E2D\u0E48\u0E32\u0E19\u0E44\u0E1F\u0E25\u0E4C\u0E44\u0E21\u0E48\u0E2A\u0E33\u0E40\u0E23\u0E47\u0E08"));
-        reader.readAsDataURL(file);
-      });
-      const mediaType = file.type || "image/jpeg";
+      const { base64Data, mediaType } = await resizeImageToBase64(file);
       const paramList = params.map((p) => `${p.key} (${p.label}${p.unit ? ", \u0E2B\u0E19\u0E48\u0E27\u0E22 " + p.unit : ""})`).join(", ");
       const prompt = `\u0E19\u0E35\u0E48\u0E04\u0E37\u0E2D\u0E23\u0E39\u0E1B\u0E16\u0E48\u0E32\u0E22\u0E1C\u0E25\u0E15\u0E23\u0E27\u0E08\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33 (\u0E2D\u0E32\u0E08\u0E40\u0E1B\u0E47\u0E19\u0E41\u0E16\u0E1A\u0E17\u0E14\u0E2A\u0E2D\u0E1A\u0E2A\u0E35 (test strip) \u0E40\u0E17\u0E35\u0E22\u0E1A\u0E01\u0E31\u0E1A\u0E0A\u0E32\u0E23\u0E4C\u0E15\u0E2D\u0E49\u0E32\u0E07\u0E2D\u0E34\u0E07\u0E43\u0E19\u0E20\u0E32\u0E1E \u0E2B\u0E23\u0E37\u0E2D\u0E2B\u0E19\u0E49\u0E32\u0E08\u0E2D\u0E40\u0E04\u0E23\u0E37\u0E48\u0E2D\u0E07\u0E27\u0E31\u0E14\u0E14\u0E34\u0E08\u0E34\u0E17\u0E31\u0E25) \u0E43\u0E2B\u0E49\u0E2D\u0E48\u0E32\u0E19\u0E04\u0E48\u0E32\u0E08\u0E32\u0E01\u0E20\u0E32\u0E1E\u0E19\u0E35\u0E49 \u0E41\u0E25\u0E49\u0E27\u0E41\u0E1B\u0E25\u0E07\u0E40\u0E1B\u0E47\u0E19\u0E04\u0E48\u0E32\u0E15\u0E31\u0E27\u0E40\u0E25\u0E02\u0E2A\u0E33\u0E2B\u0E23\u0E31\u0E1A\u0E1E\u0E32\u0E23\u0E32\u0E21\u0E34\u0E40\u0E15\u0E2D\u0E23\u0E4C\u0E15\u0E48\u0E2D\u0E44\u0E1B\u0E19\u0E35\u0E49\u0E40\u0E17\u0E48\u0E32\u0E17\u0E35\u0E48\u0E21\u0E2D\u0E07\u0E40\u0E2B\u0E47\u0E19\u0E44\u0E14\u0E49\u0E08\u0E32\u0E01\u0E20\u0E32\u0E1E: ${paramList}. \u0E16\u0E49\u0E32\u0E1E\u0E32\u0E23\u0E32\u0E21\u0E34\u0E40\u0E15\u0E2D\u0E23\u0E4C\u0E44\u0E2B\u0E19\u0E44\u0E21\u0E48\u0E21\u0E35\u0E43\u0E19\u0E20\u0E32\u0E1E\u0E2B\u0E23\u0E37\u0E2D\u0E44\u0E21\u0E48\u0E21\u0E31\u0E48\u0E19\u0E43\u0E08 \u0E43\u0E2B\u0E49\u0E02\u0E49\u0E32\u0E21\u0E44\u0E1B\u0E44\u0E21\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E43\u0E2A\u0E48\u0E43\u0E19\u0E1C\u0E25\u0E25\u0E31\u0E1E\u0E18\u0E4C \u0E15\u0E2D\u0E1A\u0E01\u0E25\u0E31\u0E1A\u0E40\u0E1B\u0E47\u0E19 JSON \u0E40\u0E17\u0E48\u0E32\u0E19\u0E31\u0E49\u0E19 \u0E2B\u0E49\u0E32\u0E21\u0E21\u0E35\u0E02\u0E49\u0E2D\u0E04\u0E27\u0E32\u0E21\u0E2D\u0E37\u0E48\u0E19\u0E43\u0E14 \u0E2B\u0E49\u0E32\u0E21\u0E21\u0E35 markdown code fence \u0E23\u0E39\u0E1B\u0E41\u0E1A\u0E1A: {"key1": number, "key2": number} \u0E43\u0E0A\u0E49 key \u0E15\u0E23\u0E07\u0E15\u0E32\u0E21\u0E17\u0E35\u0E48\u0E01\u0E33\u0E2B\u0E19\u0E14\u0E40\u0E1B\u0E4A\u0E30 \u0E46 (\u0E40\u0E0A\u0E48\u0E19 "ph", "salinity", "temp", "hardness", "nitrate", "orp")`;
       const response = await fetch("/api/analyze-water", {
