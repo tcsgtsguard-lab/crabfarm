@@ -685,6 +685,53 @@ function parseBoxCode(code) {
 function makeBoxCode(row, col) {
   return `${row}${String(col).padStart(2, "0")}`;
 }
+function normalizeBoxNumber(n) {
+  return String(n || "").trim().toUpperCase();
+}
+function compareBoxNumbers(aNum, bNum) {
+  const pa = parseBoxCode(aNum);
+  const pb = parseBoxCode(bNum);
+  if (pa && pb) {
+    if (pa.row !== pb.row) return pa.row < pb.row ? -1 : 1;
+    return pa.col - pb.col;
+  }
+  if (pa && !pb) return -1;
+  if (!pa && pb) return 1;
+  return normalizeBoxNumber(aNum).localeCompare(normalizeBoxNumber(bNum));
+}
+// Merge boxes that share the same box number (can happen if a new box was
+// ever created on top of an existing/empty one with the same code) so the
+// floor plan and the list always agree on a single row per box number.
+function dedupeBoxes(list) {
+  const groups = /* @__PURE__ */ new Map();
+  (list || []).forEach((b) => {
+    const key = normalizeBoxNumber(b.boxNumber);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(b);
+  });
+  let changed = false;
+  const result = [];
+  groups.forEach((group) => {
+    if (group.length === 1) {
+      result.push(group[0]);
+      return;
+    }
+    changed = true;
+    const actives = group.filter((b) => b.status === "active");
+    let keep;
+    if (actives.length) {
+      keep = actives.reduce((a, b) => String(b.stockDate || "") > String(a.stockDate || "") ? b : a);
+    } else {
+      keep = group.reduce((a, b) => {
+        const da = String(a.harvestDate || a.stockDate || "");
+        const db = String(b.harvestDate || b.stockDate || "");
+        return db > da ? b : a;
+      });
+    }
+    result.push(keep);
+  });
+  return { list: result, changed };
+}
 function BoxCard({ box, onOpen, onQuickHarvest, onQuickDeath, moltReminderDays }) {
   const { isEmpty, lastMolt, daysSinceMolt, daysSinceStock, eggReady, weightReady, moltDue } = computeBoxStatus(box, moltReminderDays);
   return /* @__PURE__ */ React.createElement(
@@ -717,7 +764,11 @@ function FloorPlanCell({ code, box, moltReminderDays, onOpen, onQuickHarvest, on
     return /* @__PURE__ */ React.createElement(
       "button",
       {
-        onClick: () => onAddAt(code),
+        // If a box row already exists for this code (just currently empty,
+        // e.g. after recording a death/harvest), reopen that SAME row so
+        // restocking updates it in place instead of creating a duplicate
+        // box with the same number. Only truly-new codes go to onAddAt.
+        onClick: () => box ? onOpen(box) : onAddAt(code),
         style: {
           background: "#F2F5F1",
           border: `1.5px dashed ${C.line}`,
@@ -1019,11 +1070,12 @@ function BoxFormModal({ initial, onSave, onClose, onDelete, nextBatchFor, prefil
       return;
     }
     if (isNew || restock) {
-      const dup = (allBoxes || []).some(
-        (b) => b.id !== f.id && b.status === "active" && String(b.boxNumber).trim().toUpperCase() === String(f.boxNumber).trim().toUpperCase()
+      const normalized = String(f.boxNumber).trim().toUpperCase();
+      const existing = (allBoxes || []).find(
+        (b) => b.id !== f.id && String(b.boxNumber).trim().toUpperCase() === normalized
       );
-      if (dup) {
-        const msg = `เบอร์กล่อง "${f.boxNumber}" มีปูกำลังเลี้ยงอยู่แล้ว กรุณาตรวจสอบ หรือเก็บเกี่ยวกล่องเดิมก่อน`;
+      if (existing) {
+        const msg = existing.status === "active" ? `เบอร์กล่อง "${f.boxNumber}" มีปูกำลังเลี้ยงอยู่แล้ว กรุณาตรวจสอบ หรือเก็บเกี่ยว/บันทึกปูตายกล่องเดิมก่อน` : `กล่อง "${f.boxNumber}" มีอยู่แล้วในระบบ (สถานะว่าง) กรุณาเปิดกล่องเดิมแล้วกด "ลงปูใหม่" แทนการเพิ่มกล่องใหม่ เพื่อไม่ให้มีเบอร์กล่องซ้ำ`;
         setBoxNumberError(msg);
         alert(msg);
         return;
@@ -1792,7 +1844,9 @@ function App() {
           storeGetSettings()
         ]);
         if (cancelled) return;
-        setBoxes(b);
+        const deduped = dedupeBoxes(b);
+        setBoxes(deduped.list);
+        if (deduped.changed) storeSetCollection(COL_BOXES, deduped.list);
         setHistory(h);
         setWaterLogs(w);
         setSettings(mergeSettings(s));
@@ -1832,7 +1886,9 @@ function App() {
           storeGetSettings()
         ]);
         if (stopped) return;
-        setBoxes((prev) => JSON.stringify(prev) === JSON.stringify(b) ? prev : b);
+        const deduped = dedupeBoxes(b);
+        if (deduped.changed) storeSetCollection(COL_BOXES, deduped.list);
+        setBoxes((prev) => JSON.stringify(prev) === JSON.stringify(deduped.list) ? prev : deduped.list);
         setHistory((prev) => JSON.stringify(prev) === JSON.stringify(h) ? prev : h);
         setWaterLogs((prev) => JSON.stringify(prev) === JSON.stringify(w) ? prev : w);
         setSettings((prev) => {
@@ -2020,7 +2076,7 @@ function App() {
     if (boxFilter.sex !== "all" && b.status === "active" && b.sex !== boxFilter.sex) return false;
     if (boxFilter.q && !String(b.boxNumber).toLowerCase().includes(boxFilter.q.toLowerCase())) return false;
     return true;
-  });
+  }).sort((a, b) => compareBoxNumbers(a.boxNumber, b.boxNumber));
   const listTotalPages = Math.max(1, Math.ceil(filteredBoxes.length / LIST_PAGE_SIZE));
   const listPageClamped = Math.min(listPage, listTotalPages - 1);
   const pagedBoxes = filteredBoxes.slice(listPageClamped * LIST_PAGE_SIZE, (listPageClamped + 1) * LIST_PAGE_SIZE);
