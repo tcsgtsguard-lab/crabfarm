@@ -37,7 +37,9 @@ export default async function handler(req, res) {
 
     // ---- ส่วนที่ 1: Tavily ค้นเว็บ ----
     // ใช้ search_depth "basic" เสมอ = 1 credit/ครั้ง (advanced จะกิน 2 credits)
-    // เพิ่ม max_results และ time_range เพื่อให้ได้ข้อมูลกว้าง+ใหม่ขึ้น โดยไม่กิน credit เพิ่ม
+    // include_raw_content ไม่กิน credit เพิ่ม แต่จำเป็นมาก — ถ้าไม่ใส่ "basic" search จะได้แค่ snippet สั้นๆ
+    // ซึ่งมักไม่มีตัวเลขราคาอยู่ในนั้น ทำให้ AI หาราคาที่ชัดเจนไม่เจอ (สาเหตุหลักที่เจอ "AI ไม่พบราคาตลาดที่ชัดเจน")
+    // ไม่จำกัด time_range เพราะหน้าเว็บราคาปูในไทยมีไม่เยอะ การจำกัดแค่ 1 เดือนอาจตัดหน้าที่เกี่ยวข้องออกไปหมด
     const query = `ราคาปูทะเลวันนี้ ราคาปูดำ ราคาปูไข่ กิโลกรัมละกี่บาท ราคาขายส่งจากฟาร์ม ราคารับซื้อตัวแทนพ่อค้าคนกลาง ตลาดปู ${locationName || "ประเทศไทย"}`;
     const tavilyRes = await fetch(TAVILY_URL, {
       method: "POST",
@@ -49,8 +51,8 @@ export default async function handler(req, res) {
         query,
         search_depth: "basic",
         max_results: 8,
-        time_range: "month",
         include_answer: true,
+        include_raw_content: "text",
         topic: "general"
       })
     });
@@ -76,7 +78,8 @@ export default async function handler(req, res) {
     const contextParts = [];
     if (tavilyData.answer) contextParts.push(`สรุปจากการค้นหา: ${tavilyData.answer}`);
     results.forEach((r, i) => {
-      contextParts.push(`[แหล่งที่ ${i + 1}] ${r.title || ""}\n${(r.content || "").slice(0, 1200)}\n(อ้างอิง: ${r.url || ""})`);
+      const body = r.raw_content && r.raw_content.length > (r.content || "").length ? r.raw_content : r.content || "";
+      contextParts.push(`[แหล่งที่ ${i + 1}] ${r.title || ""}\n${body.slice(0, 3000)}\n(อ้างอิง: ${r.url || ""})`);
     });
     const searchContext = contextParts.join("\n\n");
 
