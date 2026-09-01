@@ -51,7 +51,10 @@ const SETTINGS_KEY = "crabfarm:settings";
 const COL_BOXES = "boxes";
 const COL_HISTORY = "history";
 const COL_WATER = "water";
-const CHUNKS = { boxes: 24, history: 10, water: 10 }; // 24 chunks * ~1200 boxes each supports 30,000+ boxes safely under the size limit per key
+const COL_MARKET = "market";
+const COL_CUSTOMERS = "customers";
+const COL_ORDERS = "orders";
+const CHUNKS = { boxes: 24, history: 10, water: 10, market: 4, customers: 4, orders: 6 }; // 24 chunks * ~1200 boxes each supports 30,000+ boxes safely under the size limit per key
 function chunkKey(prefix, i) {
   return `crabfarm:${prefix}:${i}`;
 }
@@ -269,6 +272,20 @@ const DEFAULT_SALES_TARGETS = {
   female: 0,
   eggs: 0
 };
+const DEFAULT_CRAB_SIZE_PRESETS = [
+  "2-3 \u0E15\u0E31\u0E27/\u0E01\u0E01.",
+  "3-4 \u0E15\u0E31\u0E27/\u0E01\u0E01.",
+  "4-5 \u0E15\u0E31\u0E27/\u0E01\u0E01.",
+  "5-6 \u0E15\u0E31\u0E27/\u0E01\u0E01.",
+  "6 \u0E15\u0E31\u0E27\u0E02\u0E36\u0E49\u0E19\u0E44\u0E1B/\u0E01\u0E01."
+];
+const ORDER_JOB_TYPES = [
+  { key: "live", label: "\u0E1B\u0E39\u0E2A\u0E14 (\u0E17\u0E31\u0E49\u0E07\u0E15\u0E31\u0E27)" },
+  { key: "sized", label: "\u0E17\u0E33\u0E44\u0E0B\u0E2A\u0E4C (\u0E04\u0E31\u0E14\u0E44\u0E0B\u0E2A\u0E4C\u0E41\u0E25\u0E49\u0E27)" },
+  { key: "roe", label: "\u0E17\u0E33\u0E44\u0E02\u0E48 (\u0E1B\u0E39\u0E44\u0E02\u0E48\u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E02\u0E32\u0E22)" }
+];
+const ORDER_STATUS_LABELS = { pending: "\u0E23\u0E2D\u0E14\u0E33\u0E40\u0E19\u0E34\u0E19\u0E01\u0E32\u0E23", fulfilled: "\u0E2A\u0E48\u0E07\u0E21\u0E2D\u0E1A\u0E41\u0E25\u0E49\u0E27", cancelled: "\u0E22\u0E01\u0E40\u0E25\u0E34\u0E01" };
+const CUSTOMER_TYPE_LABELS = { regular: "\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32\u0E1B\u0E23\u0E30\u0E08\u0E33", agent: "\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32\u0E1B\u0E35\u0E01 (\u0E15\u0E31\u0E27\u0E41\u0E17\u0E19/\u0E1E\u0E48\u0E2D\u0E04\u0E49\u0E32\u0E04\u0E19\u0E01\u0E25\u0E32\u0E07)" };
 const DEFAULT_MINERALS = [
   { key: "sodiumBicarbonate", name: "\u0E42\u0E0B\u0E40\u0E14\u0E35\u0E22\u0E21\u0E44\u0E1A\u0E04\u0E32\u0E23\u0E4C\u0E1A\u0E2D\u0E40\u0E19\u0E15 (Sodium Bicarbonate)", note: "Food Grade \u2014 \u0E40\u0E1E\u0E34\u0E48\u0E21\u0E14\u0E48\u0E32\u0E07/\u0E1A\u0E31\u0E1F\u0E40\u0E1F\u0E2D\u0E23\u0E4C pH \u0E41\u0E25\u0E30 KH" },
   { key: "potassiumChloride", name: "\u0E42\u0E1E\u0E41\u0E17\u0E2A\u0E40\u0E0B\u0E35\u0E22\u0E21\u0E04\u0E25\u0E2D\u0E44\u0E23\u0E14\u0E4C (Potassium Chloride)", note: "\u0E16\u0E38\u0E07 1kg \u2014 \u0E40\u0E1E\u0E34\u0E48\u0E21\u0E42\u0E1E\u0E41\u0E17\u0E2A\u0E40\u0E0B\u0E35\u0E22\u0E21 (K+) \u0E0A\u0E48\u0E27\u0E22\u0E40\u0E23\u0E37\u0E48\u0E2D\u0E07\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A" },
@@ -293,7 +310,8 @@ const DEFAULT_SETTINGS = {
   feedCostPerKg: 35,
   pricing: DEFAULT_PRICING,
   salesTargets: DEFAULT_SALES_TARGETS,
-  minerals: DEFAULT_MINERALS
+  minerals: DEFAULT_MINERALS,
+  crabSizePresets: DEFAULT_CRAB_SIZE_PRESETS
 };
 function mergeSettings(s) {
   if (!s || !s.parameters) return DEFAULT_SETTINGS;
@@ -311,7 +329,8 @@ function mergeSettings(s) {
       female: { ...DEFAULT_PRICING.female, ...(s.pricing && s.pricing.female) },
       eggs: { ...DEFAULT_PRICING.eggs, ...(s.pricing && s.pricing.eggs) }
     },
-    salesTargets: { ...DEFAULT_SALES_TARGETS, ...s.salesTargets }
+    salesTargets: { ...DEFAULT_SALES_TARGETS, ...s.salesTargets },
+    crabSizePresets: s.crabSizePresets && s.crabSizePresets.length ? s.crabSizePresets : DEFAULT_CRAB_SIZE_PRESETS
   };
 }
 const CORE_PARAM_KEYS = ["salinity", "ph", "temp", "ammonia", "nitrite", "alkalinity", "calcium", "do", "waterLevel"];
@@ -466,6 +485,49 @@ function computeBoxFinance(box, settings) {
     profitPerKgForecast: weightKg > 0 ? profitForecast / weightKg : 0
   };
 }
+function crabCategoryLabel(cat) {
+  return cat === "male" ? "\u0E15\u0E31\u0E27\u0E1C\u0E39\u0E49" : cat === "female" ? "\u0E15\u0E31\u0E27\u0E40\u0E21\u0E35\u0E22" : "\u0E1B\u0E39\u0E44\u0E02\u0E48";
+}
+// Live stock available to sell for a category, in kg — used so the order/reservation
+// form can warn before promising more crab than is actually in the boxes right now.
+function categoryStockKg(boxes, category) {
+  return boxes.filter((b) => b.status === "active" && crabCategory(b) === category).reduce((s, b) => s + Number(b.currentWeight || 0), 0) / 1000;
+}
+function orderReservedKg(orders, category, excludeId) {
+  return (orders || []).filter((o) => o.category === category && o.status === "pending" && o.id !== excludeId).reduce((s, o) => s + Number(o.quantityKg || 0), 0);
+}
+function monthKeyOf(dateStr) {
+  if (!dateStr) return null;
+  return String(dateStr).slice(0, 7);
+}
+const TH_MONTH_SHORT = ["\u0E21.\u0E04.", "\u0E01.\u0E1E.", "\u0E21\u0E35.\u0E04.", "\u0E40\u0E21.\u0E22.", "\u0E1E.\u0E04.", "\u0E21\u0E34.\u0E22.", "\u0E01.\u0E04.", "\u0E2A.\u0E04.", "\u0E01.\u0E22.", "\u0E15.\u0E04.", "\u0E1E.\u0E22.", "\u0E18.\u0E04."];
+function monthLabelOf(key) {
+  if (!key) return "\u2014";
+  const [y, m] = key.split("-");
+  return `${TH_MONTH_SHORT[Number(m) - 1] || m} ${Number(y) + 543}`;
+}
+// Realized profit per calendar month, built from harvest history (dead-outcome
+// records excluded since they carry no sale). Sorted oldest -> newest.
+function computeMonthlyProfit(history) {
+  const map = /* @__PURE__ */ new Map();
+  (history || []).forEach((r) => {
+    if (r.outcome === "dead") return;
+    const k = monthKeyOf(r.harvestDate);
+    if (!k) return;
+    map.set(k, (map.get(k) || 0) + Number(r.profit || 0));
+  });
+  return Array.from(map.entries()).sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0).map(([key, profit]) => ({ key, label: monthLabelOf(key), profit }));
+}
+function monthlyProfitLevel(months) {
+  if (!months.length) return { level: "none", label: "\u2014\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u2014", tone: "muted" };
+  const latest = months[months.length - 1].profit;
+  const prior = months.slice(0, -1);
+  const avg = prior.length ? prior.reduce((s, m) => s + m.profit, 0) / prior.length : null;
+  if (avg === null) return { level: "flat", label: latest >= 0 ? "\u0E40\u0E14\u0E37\u0E2D\u0E19\u0E41\u0E23\u0E01" : "\u0E02\u0E32\u0E14\u0E17\u0E38\u0E19", tone: latest >= 0 ? "info" : "danger" };
+  if (latest >= avg * 1.1) return { level: "good", label: "\u0E14\u0E35\u0E02\u0E36\u0E49\u0E19\u0E08\u0E32\u0E01\u0E40\u0E14\u0E37\u0E2D\u0E19\u0E01\u0E48\u0E2D\u0E19", tone: "good" };
+  if (latest <= avg * 0.9) return { level: "low", label: "\u0E15\u0E48\u0E33\u0E01\u0E27\u0E48\u0E32\u0E40\u0E14\u0E37\u0E2D\u0E19\u0E01\u0E48\u0E2D\u0E19", tone: "danger" };
+  return { level: "fair", label: "\u0E43\u0E01\u0E25\u0E49\u0E40\u0E04\u0E35\u0E22\u0E07\u0E40\u0E14\u0E37\u0E2D\u0E19\u0E01\u0E48\u0E2D\u0E19", tone: "warn" };
+}
 function LogoMark({ size = 40 }) {
   return /* @__PURE__ */ React.createElement("svg", { width: size, height: size * 0.75, viewBox: "0 0 400 300" }, /* @__PURE__ */ React.createElement("g", { transform: "translate(200,150) scale(1.25)" }, /* @__PURE__ */ React.createElement("g", { stroke: C.coral, strokeWidth: "17", strokeLinecap: "round", fill: "none" }, /* @__PURE__ */ React.createElement("path", { d: "M-52,44 Q-96,58 -116,92" }), /* @__PURE__ */ React.createElement("path", { d: "M-46,66 Q-84,84 -102,116" }), /* @__PURE__ */ React.createElement("path", { d: "M-34,84 Q-66,102 -80,130" }), /* @__PURE__ */ React.createElement("path", { d: "M52,44 Q96,58 116,92" }), /* @__PURE__ */ React.createElement("path", { d: "M46,66 Q84,84 102,116" }), /* @__PURE__ */ React.createElement("path", { d: "M34,84 Q66,102 80,130" })), /* @__PURE__ */ React.createElement("g", { transform: "translate(-50,0) rotate(-24) scale(1.1)" }, /* @__PURE__ */ React.createElement("path", { d: "M0,4 C -20,-6 -28,-28 -24,-50 C -20,-74 -2,-90 18,-86 C 34,-82 40,-62 34,-42 C 30,-28 18,-10 4,2 Z", fill: C.coral }), /* @__PURE__ */ React.createElement("path", { d: "M14,-56 C 22,-52 24,-42 20,-34", fill: "none", stroke: C.ink, strokeWidth: "4", strokeLinecap: "round", opacity: "0.55" })), /* @__PURE__ */ React.createElement("g", { transform: "translate(50,0) rotate(24) scale(-1.1,1.1)" }, /* @__PURE__ */ React.createElement("path", { d: "M0,4 C -20,-6 -28,-28 -24,-50 C -20,-74 -2,-90 18,-86 C 34,-82 40,-62 34,-42 C 30,-28 18,-10 4,2 Z", fill: C.coral }), /* @__PURE__ */ React.createElement("path", { d: "M14,-56 C 22,-52 24,-42 20,-34", fill: "none", stroke: C.ink, strokeWidth: "4", strokeLinecap: "round", opacity: "0.55" })), /* @__PURE__ */ React.createElement("ellipse", { cx: "0", cy: "32", rx: "78", ry: "48", fill: C.coral }), /* @__PURE__ */ React.createElement("path", { d: "M-56,17 Q0,-6 56,17", fill: "none", stroke: C.ink, strokeWidth: "3", opacity: "0.3" }), /* @__PURE__ */ React.createElement("path", { d: "M-64,42 Q0,66 64,42", fill: "none", stroke: C.ink, strokeWidth: "3", opacity: "0.3" }), /* @__PURE__ */ React.createElement("line", { x1: "-22", y1: "-6", x2: "-31", y2: "-30", stroke: C.ink, strokeWidth: "6", strokeLinecap: "round" }), /* @__PURE__ */ React.createElement("line", { x1: "22", y1: "-6", x2: "31", y2: "-30", stroke: C.ink, strokeWidth: "6", strokeLinecap: "round" }), /* @__PURE__ */ React.createElement("circle", { cx: "-31", cy: "-34", r: "8.5", fill: C.ink }), /* @__PURE__ */ React.createElement("circle", { cx: "31", cy: "-34", r: "8.5", fill: C.ink })));
 }
@@ -532,6 +594,37 @@ function GaugeBar({ param, value }) {
       }
     }
   )), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10, color: C.muted, marginTop: 2, fontFamily: MONO } }, /* @__PURE__ */ React.createElement("span", null, min, unit), /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.7 } }, "\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22 ", target, unit), /* @__PURE__ */ React.createElement("span", null, max, unit)));
+}
+function LineChartSVG({ series, height = 190, yFormat }) {
+  const width = 640;
+  const points = (series || []).flatMap((s) => s.points || []);
+  if (points.length < 2) {
+    return /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: C.muted, padding: "20px 0" } }, "\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E1E\u0E2D\u0E2A\u0E33\u0E2B\u0E23\u0E31\u0E1A\u0E01\u0E23\u0E32\u0E1F (\u0E15\u0E49\u0E2D\u0E07\u0E21\u0E35\u0E2D\u0E22\u0E48\u0E32\u0E07\u0E19\u0E49\u0E2D\u0E22 2 \u0E08\u0E38\u0E14)");
+  }
+  const padL = 46, padR = 14, padT = 14, padB = 26;
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minYraw = Math.min(0, ...ys), maxYraw = Math.max(...ys);
+  const yPad = (maxYraw - minYraw) * 0.12 || Math.abs(maxYraw) * 0.15 || 1;
+  const minY = minYraw - yPad, maxY = maxYraw + yPad;
+  const xr = maxX - minX || 1, yr = maxY - minY || 1;
+  const sx = (x) => padL + (x - minX) / xr * (width - padL - padR);
+  const sy = (y) => height - padB - (y - minY) / yr * (height - padT - padB);
+  const gridLines = 4;
+  const fmt = yFormat || ((v) => num(v, Math.abs(v) < 10 ? 1 : 0));
+  return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("svg", { width: "100%", height, viewBox: `0 0 ${width} ${height}`, preserveAspectRatio: "xMidYMid meet" }, Array.from({ length: gridLines + 1 }).map((_, i) => {
+    const y = padT + i / gridLines * (height - padT - padB);
+    const val = maxY - i / gridLines * yr;
+    return /* @__PURE__ */ React.createElement("g", { key: i }, /* @__PURE__ */ React.createElement("line", { x1: padL, y1: y, x2: width - padR, y2: y, stroke: C.line, strokeWidth: "1" }), /* @__PURE__ */ React.createElement("text", { x: padL - 6, y: y + 3, fontSize: "9.5", fill: C.muted, textAnchor: "end", fontFamily: MONO }, fmt(val)));
+  }), (series || []).map((s, si) => /* @__PURE__ */ React.createElement("polyline", { key: `l${si}`, points: (s.points || []).map((p) => `${sx(p.x)},${sy(p.y)}`).join(" "), fill: "none", stroke: s.color || C.water, strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" })), (series || []).map((s, si) => (s.points || []).map((p, i) => /* @__PURE__ */ React.createElement("circle", { key: `p${si}-${i}`, cx: sx(p.x), cy: sy(p.y), r: "2.8", fill: s.color || C.water })))), (series || []).length > 1 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11.5, marginTop: 6 } }, series.map((s, si) => /* @__PURE__ */ React.createElement("div", { key: si, style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 10, height: 10, borderRadius: 3, background: s.color || C.water, display: "inline-block" } }), /* @__PURE__ */ React.createElement("span", { style: { color: C.muted } }, s.name)))));
+}
+function BarChartSVG({ data, height = 170, color }) {
+  if (!data || !data.length || !data.some((d) => d.value > 0)) {
+    return /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: C.muted, padding: "20px 0" } }, "\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25");
+  }
+  const max = Math.max(1, ...data.map((d) => d.value));
+  return /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "flex-end", gap: 18, height, padding: "0 6px" } }, data.map((d, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", flexDirection: "column", alignItems: "center", flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, fontFamily: MONO, color: C.text, marginBottom: 4, fontWeight: 700 } }, num(d.value, d.value < 10 ? 1 : 0)), /* @__PURE__ */ React.createElement("div", { style: { width: "60%", maxWidth: 54, height: Math.max(4, d.value / max * (height - 40)), background: d.color || color || C.water, borderRadius: "6px 6px 0 0", transition: "height 0.2s" } }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, marginTop: 6, textAlign: "center" } }, d.label))));
 }
 function Pill({ children, tone = "muted" }) {
   const tones = {
@@ -1580,6 +1673,27 @@ function SettingsTab({ settings, onSave, onExport, onImport, onResetAll, counts 
     }
   )), /* @__PURE__ */ React.createElement(Field, { label: "\u0E08\u0E33\u0E19\u0E27\u0E19\u0E0A\u0E48\u0E2D\u0E07\u0E15\u0E48\u0E2D\u0E41\u0E16\u0E27" }, /* @__PURE__ */ React.createElement("input", { type: "number", min: "1", style: inputStyle, value: s.layoutSlotsPerRow, onChange: (e) => setS({ ...s, layoutSlotsPerRow: Number(e.target.value) }) })))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E04\u0E48\u0E32\u0E17\u0E31\u0E48\u0E27\u0E44\u0E1B\u0E02\u0E2D\u0E07\u0E23\u0E30\u0E1A\u0E1A"), /* @__PURE__ */ React.createElement("div", { className: "cf-grid-3col", style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0 16px" } }, /* @__PURE__ */ React.createElement(Field, { label: "\u0E1B\u0E23\u0E34\u0E21\u0E32\u0E15\u0E23\u0E19\u0E49\u0E33\u0E43\u0E19\u0E23\u0E30\u0E1A\u0E1A (\u0E25\u0E34\u0E15\u0E23)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: s.tankVolumeLiters, onChange: (e) => setS({ ...s, tankVolumeLiters: Number(e.target.value) }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E2D\u0E31\u0E15\u0E23\u0E32\u0E01\u0E32\u0E23\u0E43\u0E2B\u0E49\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E40\u0E23\u0E34\u0E48\u0E21\u0E15\u0E49\u0E19 (%)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: s.feedRatePercent, onChange: (e) => setS({ ...s, feedRatePercent: Number(e.target.value) }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E40\u0E15\u0E37\u0E2D\u0E19\u0E15\u0E23\u0E27\u0E08\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A\u0E2B\u0E32\u0E01\u0E40\u0E01\u0E34\u0E19 (\u0E27\u0E31\u0E19)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: inputStyle, value: s.moltReminderDays, onChange: (e) => setS({ ...s, moltReminderDays: Number(e.target.value) }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E40\u0E1E\u0E34\u0E48\u0E21\u0E02\u0E31\u0E49\u0E19\u0E15\u0E48\u0E33/\u0E04\u0E23\u0E31\u0E49\u0E07\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A (%)", hint: "\u0E43\u0E0A\u0E49\u0E40\u0E17\u0E35\u0E22\u0E1A\u0E01\u0E31\u0E1A\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E01\u0E48\u0E2D\u0E19\u0E25\u0E2D\u0E01\u0E04\u0E23\u0E32\u0E1A\u0E41\u0E15\u0E48\u0E25\u0E30\u0E04\u0E23\u0E31\u0E49\u0E07" }, /* @__PURE__ */ React.createElement("input", { type: "number", step: "0.5", min: "0", style: inputStyle, value: s.moltStandardGrowthPercent, onChange: (e) => setS({ ...s, moltStandardGrowthPercent: Number(e.target.value) }) })))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E1B\u0E23\u0E31\u0E1A\u0E0A\u0E48\u0E27\u0E07\u0E04\u0E48\u0E32\u0E1B\u0E01\u0E15\u0E34\u0E41\u0E25\u0E30\u0E15\u0E31\u0E27\u0E04\u0E39\u0E13\u0E04\u0E33\u0E19\u0E27\u0E13\u0E42\u0E14\u0E2A\u0E43\u0E2B\u0E49\u0E15\u0E23\u0E07\u0E01\u0E31\u0E1A\u0E1C\u0E25\u0E34\u0E15\u0E20\u0E31\u0E13\u0E11\u0E4C\u0E08\u0E23\u0E34\u0E07\u0E17\u0E35\u0E48\u0E43\u0E0A\u0E49\u0E43\u0E19\u0E1F\u0E32\u0E23\u0E4C\u0E21" }, "\u0E1E\u0E32\u0E23\u0E32\u0E21\u0E34\u0E40\u0E15\u0E2D\u0E23\u0E4C\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33"), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { style: tableStyle }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E1E\u0E32\u0E23\u0E32\u0E21\u0E34\u0E40\u0E15\u0E2D\u0E23\u0E4C"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E2B\u0E19\u0E48\u0E27\u0E22"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E15\u0E48\u0E33\u0E2A\u0E38\u0E14"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E2A\u0E39\u0E07\u0E2A\u0E38\u0E14"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E15\u0E31\u0E27\u0E04\u0E39\u0E13\u0E42\u0E14\u0E2A"))), /* @__PURE__ */ React.createElement("tbody", null, s.parameters.map((p, i) => /* @__PURE__ */ React.createElement("tr", { key: p.key }, /* @__PURE__ */ React.createElement("td", { style: tdStyle }, p.label), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, p.unit || "\u2014"), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 70 }, value: p.min, onChange: (e) => setParam(i, "min", Number(e.target.value)) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 70 }, value: p.target, onChange: (e) => setParam(i, "target", Number(e.target.value)) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 70 }, value: p.max, onChange: (e) => setParam(i, "max", Number(e.target.value)) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, p.dosable ? /* @__PURE__ */ React.createElement("input", { type: "number", step: "0.001", style: { ...inputStyle, width: 80 }, value: p.doseFactor, onChange: (e) => setParam(i, "doseFactor", Number(e.target.value)) }) : "\u2014"))))))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E43\u0E0A\u0E49\u0E14\u0E36\u0E07\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E2A\u0E20\u0E32\u0E1E\u0E2D\u0E32\u0E01\u0E32\u0E28\u0E43\u0E19\u0E41\u0E17\u0E47\u0E1A \u0E19\u0E49\u0E33 / \u0E1B\u0E31\u0E4A\u0E21" }, "\u0E15\u0E33\u0E41\u0E2B\u0E19\u0E48\u0E07\u0E1F\u0E32\u0E23\u0E4C\u0E21"), /* @__PURE__ */ React.createElement("div", { className: "cf-grid-3col", style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0 16px" } }, /* @__PURE__ */ React.createElement(Field, { label: "\u0E0A\u0E37\u0E48\u0E2D\u0E2A\u0E16\u0E32\u0E19\u0E17\u0E35\u0E48/\u0E08\u0E31\u0E07\u0E2B\u0E27\u0E31\u0E14" }, /* @__PURE__ */ React.createElement("input", { style: inputStyle, value: s.farmLocationName || "", onChange: (e) => setS({ ...s, farmLocationName: e.target.value }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E25\u0E30\u0E15\u0E34\u0E08\u0E39\u0E14 (lat)" }, /* @__PURE__ */ React.createElement("input", { type: "number", step: "any", style: inputStyle, value: s.farmLat, onChange: (e) => setS({ ...s, farmLat: Number(e.target.value) }) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E25\u0E2D\u0E07\u0E08\u0E34\u0E08\u0E39\u0E14 (lon)" }, /* @__PURE__ */ React.createElement("input", { type: "number", step: "any", style: inputStyle, value: s.farmLon, onChange: (e) => setS({ ...s, farmLon: Number(e.target.value) }) }))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: C.muted, marginTop: 8 } }, "\u0E40\u0E01\u0E47\u0E1A\u0E1E\u0E34\u0E01\u0E31\u0E14 lat/lon \u0E44\u0E14\u0E49\u0E08\u0E32\u0E01 Google Maps \u2014 \u0E01\u0E14\u0E04\u0E49\u0E32\u0E07\u0E1A\u0E19\u0E41\u0E1C\u0E19\u0E17\u0E35\u0E48\u0E15\u0E33\u0E41\u0E2B\u0E19\u0E48\u0E07\u0E1F\u0E32\u0E23\u0E4C\u0E21 \u0E15\u0E31\u0E27\u0E40\u0E25\u0E02\u0E17\u0E35\u0E48\u0E02\u0E36\u0E49\u0E19\u0E15\u0E49\u0E19 URL \u0E04\u0E37\u0E2D\u0E1E\u0E34\u0E01\u0E31\u0E14")), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E43\u0E0A\u0E49\u0E04\u0E33\u0E19\u0E27\u0E13\u0E15\u0E49\u0E19\u0E17\u0E38\u0E19\u0E2B\u0E31\u0E27\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E2A\u0E30\u0E2A\u0E21\u0E41\u0E25\u0E30\u0E01\u0E33\u0E44\u0E23\u0E15\u0E48\u0E2D\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E1B\u0E31\u0E08\u0E08\u0E38\u0E1A\u0E31\u0E19\u0E43\u0E19\u0E41\u0E14\u0E0A\u0E1A\u0E2D\u0E23\u0E4C\u0E14" }, "\u0E15\u0E49\u0E19\u0E17\u0E38\u0E19\u0E2D\u0E32\u0E2B\u0E32\u0E23 & \u0E23\u0E32\u0E04\u0E32\u0E02\u0E32\u0E22"), /* @__PURE__ */ React.createElement(Field, { label: "\u0E15\u0E49\u0E19\u0E17\u0E38\u0E19\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E15\u0E48\u0E2D\u0E01\u0E34\u0E42\u0E25\u0E01\u0E23\u0E31\u0E21 (\u0E1A\u0E32\u0E17/\u0E01\u0E01. \u0E2D\u0E32\u0E2B\u0E32\u0E23)" }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, maxWidth: 220 }, value: s.feedCostPerKg, onChange: (e) => setS({ ...s, feedCostPerKg: Number(e.target.value) }) })), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto", marginTop: 10 } }, /* @__PURE__ */ React.createElement("table", { style: tableStyle }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E1B\u0E39"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E23\u0E32\u0E04\u0E32\u0E1B\u0E31\u0E08\u0E08\u0E38\u0E1A\u0E31\u0E19 (\u0E1A\u0E32\u0E17/\u0E01\u0E01.)"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E23\u0E32\u0E04\u0E32\u0E04\u0E32\u0E14\u0E01\u0E32\u0E23\u0E13\u0E4C (\u0E1A\u0E32\u0E17/\u0E01\u0E01.)"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22\u0E02\u0E32\u0E22 (\u0E01\u0E01.)"))), /* @__PURE__ */ React.createElement("tbody", null, /* @__PURE__ */ React.createElement("tr", { key: "male" }, /* @__PURE__ */ React.createElement("td", { style: tdStyle }, "\u0E15\u0E31\u0E27\u0E1C\u0E39\u0E49"), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 90 }, value: s.pricing.male.current, onChange: (e) => setPricing("male", "current", e.target.value) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 90 }, value: s.pricing.male.forecast, onChange: (e) => setPricing("male", "forecast", e.target.value) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 90 }, value: s.salesTargets.male, onChange: (e) => setSalesTarget("male", e.target.value) }))), /* @__PURE__ */ React.createElement("tr", { key: "female" }, /* @__PURE__ */ React.createElement("td", { style: tdStyle }, "\u0E15\u0E31\u0E27\u0E40\u0E21\u0E35\u0E22"), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 90 }, value: s.pricing.female.current, onChange: (e) => setPricing("female", "current", e.target.value) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 90 }, value: s.pricing.female.forecast, onChange: (e) => setPricing("female", "forecast", e.target.value) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 90 }, value: s.salesTargets.female, onChange: (e) => setSalesTarget("female", e.target.value) }))), /* @__PURE__ */ React.createElement("tr", { key: "eggs" }, /* @__PURE__ */ React.createElement("td", { style: tdStyle }, "\u0E1B\u0E39\u0E44\u0E02\u0E48"), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 90 }, value: s.pricing.eggs.current, onChange: (e) => setPricing("eggs", "current", e.target.value) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 90 }, value: s.pricing.eggs.forecast, onChange: (e) => setPricing("eggs", "forecast", e.target.value) })), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("input", { type: "number", style: { ...inputStyle, width: 90 }, value: s.salesTargets.eggs, onChange: (e) => setSalesTarget("eggs", e.target.value) })))))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: C.muted, marginTop: 8 } }, "\"\u0E23\u0E32\u0E04\u0E32\u0E1B\u0E31\u0E08\u0E08\u0E38\u0E1A\u0E31\u0E19\" \u0E04\u0E37\u0E2D\u0E23\u0E32\u0E04\u0E32\u0E15\u0E25\u0E32\u0E14\u0E27\u0E31\u0E19\u0E19\u0E35\u0E49 \u0E43\u0E0A\u0E49\u0E04\u0E33\u0E19\u0E27\u0E13\u0E01\u0E33\u0E44\u0E23\u0E08\u0E23\u0E34\u0E07 \u0E2A\u0E48\u0E27\u0E19 \"\u0E23\u0E32\u0E04\u0E32\u0E04\u0E32\u0E14\u0E01\u0E32\u0E23\u0E13\u0E4C\" \u0E43\u0E0A\u0E49\u0E1B\u0E23\u0E30\u0E21\u0E32\u0E13\u0E01\u0E33\u0E44\u0E23\u0E25\u0E48\u0E27\u0E07\u0E2B\u0E19\u0E49\u0E32 \u2014 \u0E1B\u0E23\u0E31\u0E1A\u0E17\u0E31\u0E49\u0E07\u0E2A\u0E2D\u0E07\u0E04\u0E48\u0E32\u0E44\u0E14\u0E49\u0E40\u0E2D\u0E07\u0E15\u0E32\u0E21\u0E23\u0E32\u0E04\u0E32\u0E15\u0E25\u0E32\u0E14\u0E08\u0E23\u0E34\u0E07\u0E17\u0E35\u0E48\u0E40\u0E0A\u0E47\u0E04\u0E21\u0E32 (\u0E40\u0E0A\u0E48\u0E19 \u0E1B\u0E39\u0E44\u0E02\u0E48 1,000 \u0E01\u0E01. \u0E17\u0E35\u0E48 600 \u0E1A\u0E32\u0E17/\u0E01\u0E01.)"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: C.muted, marginTop: 4 } }, "\u0E15\u0E31\u0E49\u0E07\u0E23\u0E32\u0E04\u0E32\u0E01\u0E25\u0E32\u0E07\u0E44\u0E27\u0E49\u0E17\u0E35\u0E48\u0E19\u0E35\u0E48\u0E01\u0E48\u0E2D\u0E19 \u0E41\u0E25\u0E49\u0E27\u0E44\u0E1B\u0E41\u0E01\u0E49\u0E44\u0E02\u0E23\u0E32\u0E04\u0E32\u0E02\u0E32\u0E22\u0E40\u0E09\u0E1E\u0E32\u0E30\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E44\u0E14\u0E49\u0E43\u0E19\u0E2B\u0E19\u0E49\u0E32\u0E41\u0E01\u0E49\u0E44\u0E02\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E1B\u0E39\u0E41\u0E15\u0E48\u0E25\u0E30\u0E01\u0E25\u0E48\u0E2D\u0E07 (\u0E23\u0E32\u0E04\u0E32\u0E40\u0E09\u0E1E\u0E32\u0E30\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E08\u0E30\u0E2A\u0E33\u0E04\u0E31\u0E0D\u0E01\u0E27\u0E48\u0E32\u0E23\u0E32\u0E04\u0E32\u0E01\u0E25\u0E32\u0E07)")), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E41\u0E23\u0E48\u0E18\u0E32\u0E15\u0E38/\u0E2A\u0E32\u0E23\u0E40\u0E04\u0E21\u0E35\u0E17\u0E35\u0E48\u0E21\u0E35\u0E43\u0E19\u0E1F\u0E32\u0E23\u0E4C\u0E21 \u2014 AI \u0E1C\u0E39\u0E49\u0E0A\u0E48\u0E27\u0E22\u0E08\u0E30\u0E43\u0E0A\u0E49\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E19\u0E35\u0E49\u0E15\u0E2D\u0E19\u0E41\u0E19\u0E30\u0E19\u0E33\u0E27\u0E48\u0E32\u0E04\u0E27\u0E23\u0E40\u0E15\u0E34\u0E21\u0E2A\u0E32\u0E23\u0E15\u0E31\u0E27\u0E44\u0E2B\u0E19" }, "\u{1F9EA} \u0E41\u0E23\u0E48\u0E18\u0E32\u0E15\u0E38\u0E2A\u0E33\u0E2B\u0E23\u0E31\u0E1A\u0E17\u0E33\u0E19\u0E49\u0E33\u0E17\u0E30\u0E40\u0E25\u0E40\u0E17\u0E35\u0E22\u0E21"), (s.minerals || []).map((m, i) => /* @__PURE__ */ React.createElement("div", { key: m.key || i, style: { display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("input", { style: inputStyle, placeholder: "\u0E0A\u0E37\u0E48\u0E2D\u0E2A\u0E32\u0E23/\u0E41\u0E23\u0E48\u0E18\u0E32\u0E15\u0E38", value: m.name, onChange: (e) => setMineral(i, "name", e.target.value) }), /* @__PURE__ */ React.createElement("input", { style: inputStyle, placeholder: "\u0E2B\u0E21\u0E32\u0E22\u0E40\u0E2B\u0E15\u0E38 (\u0E04\u0E27\u0E32\u0E21\u0E40\u0E02\u0E49\u0E21\u0E02\u0E49\u0E19/\u0E02\u0E19\u0E32\u0E14\u0E16\u0E38\u0E07/\u0E43\u0E0A\u0E49\u0E17\u0E33\u0E2D\u0E30\u0E44\u0E23)", value: m.note, onChange: (e) => setMineral(i, "note", e.target.value) }), /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", onClick: () => removeMineral(i) }, "\u2715"))), /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", onClick: addMineral }, "+ \u0E40\u0E1E\u0E34\u0E48\u0E21\u0E41\u0E23\u0E48\u0E18\u0E32\u0E15\u0E38")), isDirty && /* @__PURE__ */ React.createElement("div", { style: { background: "rgba(201,138,46,0.12)", border: `1px solid ${C.amber}`, borderRadius: 8, padding: "10px 14px", fontSize: 12.5, color: C.text, fontWeight: 600 } }, "\u26A0\uFE0F \u0E21\u0E35\u0E01\u0E32\u0E23\u0E41\u0E01\u0E49\u0E44\u0E02\u0E17\u0E35\u0E48\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E44\u0E14\u0E49\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01 \u2014 \u0E15\u0E49\u0E2D\u0E07\u0E01\u0E14\u0E1B\u0E38\u0E48\u0E21 \"\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E01\u0E32\u0E23\u0E15\u0E31\u0E49\u0E07\u0E04\u0E48\u0E32\" \u0E14\u0E49\u0E32\u0E19\u0E25\u0E48\u0E32\u0E07\u0E01\u0E48\u0E2D\u0E19 \u0E44\u0E21\u0E48\u0E07\u0E31\u0E49\u0E19\u0E15\u0E31\u0E27\u0E40\u0E25\u0E02\u0E08\u0E30\u0E44\u0E21\u0E48\u0E2D\u0E31\u0E1B\u0E40\u0E14\u0E15\u0E17\u0E35\u0E48\u0E41\u0E14\u0E0A\u0E1A\u0E2D\u0E23\u0E4C\u0E14"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center" } }, /* @__PURE__ */ React.createElement(Btn, { tone: "seagrass", disabled: saveState === "saving", onClick: handleSave }, saveState === "saving" ? "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u2026" : "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E01\u0E32\u0E23\u0E15\u0E31\u0E49\u0E07\u0E04\u0E48\u0E32"), /* @__PURE__ */ React.createElement(SaveStatusText, { state: saveState })), /* @__PURE__ */ React.createElement(DataManagementCard, { onExport, onImport, onResetAll, counts }), /* @__PURE__ */ React.createElement(ChangePasswordCard, null));
 }
+function DashboardChartsCard({ boxes, waterLogs, settings, financeByCategory, history }) {
+  const coreParams = settings.parameters.filter((p) => CORE_PARAM_KEYS.includes(p.key));
+  const [paramKey, setParamKey] = useState(coreParams[0] ? coreParams[0].key : "salinity");
+  const param = settings.parameters.find((p) => p.key === paramKey) || coreParams[0];
+  const waterSeries = useMemo(() => {
+    const sorted = [...waterLogs].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+    const points = sorted.filter((l) => l.readings[paramKey] !== void 0 && l.readings[paramKey] !== "").map((l) => ({ x: new Date(l.datetime).getTime(), y: Number(l.readings[paramKey]) }));
+    return [{ name: param ? param.label : paramKey, color: C.water, points }];
+  }, [waterLogs, paramKey, param]);
+  const compositionData = ["male", "female", "eggs"].map((cat) => ({
+    label: crabCategoryLabel(cat),
+    value: financeByCategory[cat] ? financeByCategory[cat].weightKg : 0,
+    color: cat === "male" ? C.water : cat === "female" ? C.coral : C.amber
+  }));
+  const monthlyProfit = useMemo(() => computeMonthlyProfit(history), [history]);
+  const recentMonths = monthlyProfit.slice(-6);
+  const latestMonth = monthlyProfit.length ? monthlyProfit[monthlyProfit.length - 1] : null;
+  const level = monthlyProfitLevel(monthlyProfit);
+  const profitSeries = [{ name: "\u0E01\u0E33\u0E44\u0E23\u0E23\u0E32\u0E22\u0E40\u0E14\u0E37\u0E2D\u0E19", color: C.seagrass, points: recentMonths.map((m, i) => ({ x: i, y: m.profit })) }];
+  return /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E19\u0E49\u0E33, \u0E2A\u0E31\u0E14\u0E2A\u0E48\u0E27\u0E19\u0E1B\u0E39\u0E23\u0E32\u0E22\u0E01\u0E25\u0E48\u0E2D\u0E07 \u0E41\u0E25\u0E30\u0E01\u0E33\u0E44\u0E23\u0E23\u0E32\u0E22\u0E40\u0E14\u0E37\u0E2D\u0E19 \u0E43\u0E19\u0E20\u0E32\u0E1E\u0E23\u0E27\u0E21" }, "\u{1F4C8} \u0E01\u0E23\u0E32\u0E1F\u0E20\u0E32\u0E1E\u0E23\u0E27\u0E21"), /* @__PURE__ */ React.createElement("div", { className: "cf-grid-2col", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 13.5 } }, "\u0E41\u0E19\u0E27\u0E42\u0E19\u0E49\u0E21\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33"), /* @__PURE__ */ React.createElement("select", { style: { ...inputStyle, width: 170, padding: "5px 8px", fontSize: 12 }, value: paramKey, onChange: (e) => setParamKey(e.target.value) }, coreParams.map((p) => /* @__PURE__ */ React.createElement("option", { key: p.key, value: p.key }, p.label)))), /* @__PURE__ */ React.createElement(LineChartSVG, { series: waterSeries, yFormat: (v) => num(v, param && param.unit === "\u00B0C" ? 1 : 2) })), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 13.5, marginBottom: 8 } }, "\u0E2A\u0E31\u0E14\u0E2A\u0E48\u0E27\u0E19\u0E1B\u0E39\u0E23\u0E32\u0E22\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E15\u0E32\u0E21\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17 (\u0E01\u0E01. \u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E23\u0E27\u0E21)"), /* @__PURE__ */ React.createElement(BarChartSVG, { data: compositionData })), /* @__PURE__ */ React.createElement("div", { style: { gridColumn: "1 / -1", borderTop: `1px solid ${C.line}`, paddingTop: 16, marginTop: 4 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16, marginBottom: 8 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, fontSize: 13.5 } }, "\u0E01\u0E33\u0E44\u0E23\u0E23\u0E32\u0E22\u0E40\u0E14\u0E37\u0E2D\u0E19\u0E25\u0E48\u0E32\u0E2A\u0E38\u0E14"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: C.muted } }, latestMonth ? latestMonth.label : "\u2014")), /* @__PURE__ */ React.createElement("div", { style: { textAlign: "right" } }, /* @__PURE__ */ React.createElement("div", { style: { fontFamily: MONO, fontWeight: 700, fontSize: 24, color: latestMonth && latestMonth.profit >= 0 ? C.seagrass : C.coral } }, latestMonth ? `${money(latestMonth.profit)} \u0E1A.` : "\u2014"), /* @__PURE__ */ React.createElement(Pill, { tone: level.tone }, level.label))), /* @__PURE__ */ React.createElement(LineChartSVG, { series: profitSeries, yFormat: (v) => num(v, 0) }), recentMonths.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", fontSize: 11, color: C.muted, marginTop: 4 } }, recentMonths.map((m) => /* @__PURE__ */ React.createElement("span", { key: m.key }, m.label))))));
+}
 const TABS = [
   { id: "dashboard", label: "\u0E41\u0E14\u0E0A\u0E1A\u0E2D\u0E23\u0E4C\u0E14" },
   { id: "boxes", label: "\u0E01\u0E25\u0E48\u0E2D\u0E07 / \u0E04\u0E2D\u0E19\u0E42\u0E14" },
@@ -1587,6 +1701,7 @@ const TABS = [
   { id: "water", label: "\u0E19\u0E49\u0E33 / \u0E1B\u0E31\u0E4A\u0E21" },
   { id: "feed", label: "\u0E04\u0E33\u0E19\u0E27\u0E13\u0E2D\u0E32\u0E2B\u0E32\u0E23" },
   { id: "history", label: "\u0E1B\u0E23\u0E30\u0E27\u0E31\u0E15\u0E34 / \u0E23\u0E32\u0E22\u0E07\u0E32\u0E19" },
+  { id: "market", label: "\u0E15\u0E25\u0E32\u0E14 / \u0E25\u0E39\u0E01\u0E04\u0E49\u0E32" },
   { id: "assistant", label: "\u{1F916} \u0E1C\u0E39\u0E49\u0E0A\u0E48\u0E27\u0E22 AI" },
   { id: "settings", label: "\u0E15\u0E31\u0E49\u0E07\u0E04\u0E48\u0E32" }
 ];
@@ -1686,6 +1801,170 @@ function ChangePasswordCard() {
     alert("\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E40\u0E02\u0E49\u0E32\u0E43\u0E0A\u0E49\u0E07\u0E32\u0E19\u0E2A\u0E33\u0E40\u0E23\u0E47\u0E08");
   };
   return /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E19\u0E35\u0E49\u0E43\u0E0A\u0E49\u0E23\u0E48\u0E27\u0E21\u0E01\u0E31\u0E19\u0E17\u0E31\u0E49\u0E07\u0E17\u0E35\u0E21 \u0E40\u0E1B\u0E25\u0E35\u0E48\u0E22\u0E19\u0E41\u0E25\u0E49\u0E27\u0E17\u0E38\u0E01\u0E04\u0E19\u0E15\u0E49\u0E2D\u0E07\u0E43\u0E0A\u0E49\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E43\u0E2B\u0E21\u0E48" }, "\u0E40\u0E1B\u0E25\u0E35\u0E48\u0E22\u0E19 Username / Password"), /* @__PURE__ */ React.createElement(Field, { label: "Password \u0E1B\u0E31\u0E08\u0E08\u0E38\u0E1A\u0E31\u0E19 (\u0E22\u0E37\u0E19\u0E22\u0E31\u0E19\u0E15\u0E31\u0E27\u0E15\u0E19)" }, /* @__PURE__ */ React.createElement("input", { type: "password", style: inputStyle, value: currentPw, onChange: (e) => setCurrentPw(e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "Username \u0E43\u0E2B\u0E21\u0E48" }, /* @__PURE__ */ React.createElement("input", { type: "text", style: inputStyle, value: newUsername, autoCapitalize: "off", autoCorrect: "off", onChange: (e) => setNewUsername(e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "Password \u0E43\u0E2B\u0E21\u0E48 (\u0E40\u0E27\u0E49\u0E19\u0E27\u0E48\u0E32\u0E07\u0E16\u0E49\u0E32\u0E44\u0E21\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E01\u0E32\u0E23\u0E40\u0E1B\u0E25\u0E35\u0E48\u0E22\u0E19)" }, /* @__PURE__ */ React.createElement("input", { type: "password", style: inputStyle, value: next, onChange: (e) => setNext(e.target.value) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E22\u0E37\u0E19\u0E22\u0E31\u0E19 Password \u0E43\u0E2B\u0E21\u0E48" }, /* @__PURE__ */ React.createElement("input", { type: "password", style: inputStyle, value: confirmPw, onChange: (e) => setConfirmPw(e.target.value) })), /* @__PURE__ */ React.createElement(Btn, { tone: "seagrass", disabled: busy, onClick: submit }, busy ? "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u2026" : "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01"));
+}
+function MarketPricesPanel({ marketPrices, settings, onAdd, onDelete }) {
+  const blankForm = () => ({
+    date: todayStr(),
+    category: "male",
+    sizeLabel: (settings.crabSizePresets || [])[0] || "",
+    wholesalePrice: "",
+    agentPrice: "",
+    marketName: "",
+    notes: ""
+  });
+  const [form, setForm] = useState(blankForm());
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const [aiResults, setAiResults] = useState(null);
+  const [myApiKey] = useState(() => {
+    try {
+      return localStorage.getItem("cf_gemini_api_key") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [chartCategory, setChartCategory] = useState("male");
+
+  const submit = () => {
+    if (form.wholesalePrice === "" && form.agentPrice === "") {
+      alert("\u0E01\u0E23\u0E2D\u0E01\u0E23\u0E32\u0E04\u0E32\u0E2A\u0E48\u0E07\u0E2B\u0E23\u0E37\u0E2D\u0E23\u0E32\u0E04\u0E32\u0E1B\u0E35\u0E01\u0E2D\u0E22\u0E48\u0E32\u0E07\u0E19\u0E49\u0E2D\u0E22 1 \u0E0A\u0E48\u0E2D\u0E07");
+      return;
+    }
+    onAdd({
+      id: uid(),
+      date: form.date,
+      category: form.category,
+      sizeLabel: form.sizeLabel,
+      wholesalePrice: form.wholesalePrice === "" ? null : Number(form.wholesalePrice),
+      agentPrice: form.agentPrice === "" ? null : Number(form.agentPrice),
+      marketName: form.marketName,
+      notes: form.notes,
+      source: "manual"
+    });
+    setForm(blankForm());
+  };
+
+  const searchAi = async () => {
+    setAiLoading(true);
+    setAiError("");
+    setAiResults(null);
+    try {
+      const locationName = settings.farmLocationName || "\u0E1B\u0E23\u0E30\u0E40\u0E17\u0E28\u0E44\u0E17\u0E22";
+      const res = await fetch("/api/market-price-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ locationName, apiKeyOverride: myApiKey || void 0 })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "\u0E40\u0E23\u0E35\u0E22\u0E01 API \u0E44\u0E21\u0E48\u0E2A\u0E33\u0E40\u0E23\u0E47\u0E08");
+      if (!Array.isArray(data.results) || data.results.length === 0) {
+        throw new Error("AI \u0E44\u0E21\u0E48\u0E1E\u0E1A\u0E23\u0E32\u0E04\u0E32\u0E15\u0E25\u0E32\u0E14\u0E17\u0E35\u0E48\u0E0A\u0E31\u0E14\u0E40\u0E08\u0E19 \u0E25\u0E2D\u0E07\u0E43\u0E2B\u0E21\u0E48\u0E2D\u0E35\u0E01\u0E04\u0E23\u0E31\u0E49\u0E07\u0E2B\u0E23\u0E37\u0E2D\u0E01\u0E23\u0E2D\u0E01\u0E40\u0E2D\u0E07");
+      }
+      setAiResults(data.results);
+    } catch (err) {
+      setAiError((err && err.message) || String(err));
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const acceptAiResult = (r) => {
+    onAdd({
+      id: uid(),
+      date: todayStr(),
+      category: r.category || "male",
+      sizeLabel: r.sizeLabel || "",
+      wholesalePrice: r.wholesalePrice != null && !isNaN(r.wholesalePrice) ? Number(r.wholesalePrice) : null,
+      agentPrice: r.agentPrice != null && !isNaN(r.agentPrice) ? Number(r.agentPrice) : null,
+      marketName: r.marketName || "AI \u0E04\u0E49\u0E19\u0E2B\u0E32",
+      notes: r.note || "",
+      source: "ai"
+    });
+    setAiResults((prev) => prev ? prev.filter((x) => x !== r) : prev);
+  };
+
+  const sorted = [...marketPrices].sort((a, b) => new Date(b.date) - new Date(a.date));
+  const chartRows = marketPrices.filter((m) => m.category === chartCategory).sort((a, b) => new Date(a.date) - new Date(b.date));
+  const chartSeries = [
+    { name: "\u0E23\u0E32\u0E04\u0E32\u0E2A\u0E48\u0E07", color: C.water, points: chartRows.filter((m) => m.wholesalePrice != null).map((m) => ({ x: new Date(m.date).getTime(), y: m.wholesalePrice })) },
+    { name: "\u0E23\u0E32\u0E04\u0E32\u0E1B\u0E35\u0E01", color: C.coral, points: chartRows.filter((m) => m.agentPrice != null).map((m) => ({ x: new Date(m.date).getTime(), y: m.agentPrice })) }
+  ].filter((s) => s.points.length);
+
+  return /* @__PURE__ */ React.createElement("div", { className: "cf-grid-2col", style: { display: "grid", gridTemplateColumns: "340px 1fr", gap: 20, alignItems: "start" } }, /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E23\u0E32\u0E04\u0E32\u0E15\u0E25\u0E32\u0E14\u0E27\u0E31\u0E19\u0E19\u0E35\u0E49"), /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", disabled: aiLoading, onClick: searchAi, style: { width: "100%", marginBottom: 10 } }, aiLoading ? "\u{1F504} \u0E01\u0E33\u0E25\u0E31\u0E07\u0E04\u0E49\u0E19\u0E2B\u0E32\u2026" : "\u{1F50E} \u0E04\u0E49\u0E19\u0E2B\u0E32\u0E23\u0E32\u0E04\u0E32\u0E15\u0E25\u0E32\u0E14\u0E14\u0E49\u0E27\u0E22 AI"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, marginBottom: 10, lineHeight: 1.5 } }, "\u0E43\u0E0A\u0E49 API Key \u0E40\u0E14\u0E35\u0E22\u0E27\u0E01\u0E31\u0E1A\u0E2B\u0E19\u0E49\u0E32 \u0E19\u0E49\u0E33 / \u0E1B\u0E31\u0E4A\u0E21 (\u0E15\u0E31\u0E49\u0E07\u0E04\u0E48\u0E32\u0E44\u0E14\u0E49\u0E17\u0E35\u0E48\u0E19\u0E31\u0E48\u0E19) \u2014 \u0E1C\u0E25\u0E25\u0E31\u0E1E\u0E18\u0E4C\u0E40\u0E1B\u0E47\u0E19\u0E23\u0E32\u0E04\u0E32\u0E2D\u0E49\u0E32\u0E07\u0E2D\u0E34\u0E07\u0E08\u0E32\u0E01\u0E01\u0E32\u0E23\u0E04\u0E49\u0E19\u0E2B\u0E32\u0E1A\u0E19\u0E40\u0E27\u0E47\u0E1A \u0E04\u0E27\u0E23\u0E15\u0E23\u0E27\u0E08\u0E2A\u0E2D\u0E1A\u0E01\u0E48\u0E2D\u0E19\u0E23\u0E31\u0E1A\u0E08\u0E23\u0E34\u0E07"), aiError && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.coral, marginBottom: 10 } }, aiError), aiResults && aiResults.length > 0 && /* @__PURE__ */ React.createElement("div", { style: { background: "rgba(44,125,160,0.06)", border: `1px solid ${C.line}`, borderRadius: 8, padding: 10, marginBottom: 12 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, fontWeight: 700, marginBottom: 6 } }, "\u0E1C\u0E25\u0E01\u0E32\u0E23\u0E04\u0E49\u0E19\u0E2B\u0E32\u0E08\u0E32\u0E01 AI \u2014 \u0E01\u0E14\u0E23\u0E31\u0E1A\u0E40\u0E1E\u0E37\u0E48\u0E2D\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01"), aiResults.map((r, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: i < aiResults.length - 1 ? `1px solid ${C.line}` : "none", gap: 8 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700 } }, crabCategoryLabel(r.category), r.sizeLabel ? ` \u00B7 ${r.sizeLabel}` : ""), /* @__PURE__ */ React.createElement("div", { style: { color: C.muted, fontSize: 11 } }, r.wholesalePrice != null ? `\u0E2A\u0E48\u0E07 ${num(r.wholesalePrice)} \u0E1A.` : "", r.wholesalePrice != null && r.agentPrice != null ? " \u00B7 " : "", r.agentPrice != null ? `\u0E1B\u0E35\u0E01 ${num(r.agentPrice)} \u0E1A.` : ""), r.marketName && /* @__PURE__ */ React.createElement("div", { style: { color: C.muted, fontSize: 10.5 } }, r.marketName)), /* @__PURE__ */ React.createElement(Btn, { tone: "seagrass", size: "sm", onClick: () => acceptAiResult(r) }, "\u0E23\u0E31\u0E1A")))), /* @__PURE__ */ React.createElement(Field, { label: "\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48" }, /* @__PURE__ */ React.createElement("input", { type: "date", style: inputStyle, value: form.date, onChange: (e) => setForm((f) => ({ ...f, date: e.target.value })) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E1B\u0E39" }, /* @__PURE__ */ React.createElement("select", { style: inputStyle, value: form.category, onChange: (e) => setForm((f) => ({ ...f, category: e.target.value })) }, CRAB_CATEGORIES.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.key, value: c.key }, c.label)))), /* @__PURE__ */ React.createElement(Field, { label: "\u0E44\u0E0B\u0E2A\u0E4C" }, /* @__PURE__ */ React.createElement("input", { list: "crabfarm-size-presets", style: inputStyle, value: form.sizeLabel, onChange: (e) => setForm((f) => ({ ...f, sizeLabel: e.target.value })), placeholder: "\u0E40\u0E0A\u0E48\u0E19 3-4 \u0E15\u0E31\u0E27/\u0E01\u0E01." }), /* @__PURE__ */ React.createElement("datalist", { id: "crabfarm-size-presets" }, (settings.crabSizePresets || []).map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s })))), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } }, /* @__PURE__ */ React.createElement(Field, { label: "\u0E23\u0E32\u0E04\u0E32\u0E2A\u0E48\u0E07 (\u0E1A\u0E32\u0E17/\u0E01\u0E01.)" }, /* @__PURE__ */ React.createElement("input", { type: "number", step: "any", style: inputStyle, value: form.wholesalePrice, onChange: (e) => setForm((f) => ({ ...f, wholesalePrice: e.target.value })) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E23\u0E32\u0E04\u0E32\u0E1B\u0E35\u0E01 (\u0E1A\u0E32\u0E17/\u0E01\u0E01.)" }, /* @__PURE__ */ React.createElement("input", { type: "number", step: "any", style: inputStyle, value: form.agentPrice, onChange: (e) => setForm((f) => ({ ...f, agentPrice: e.target.value })) }))), /* @__PURE__ */ React.createElement(Field, { label: "\u0E0A\u0E37\u0E48\u0E2D\u0E15\u0E25\u0E32\u0E14/\u0E41\u0E2B\u0E25\u0E48\u0E07\u0E23\u0E32\u0E04\u0E32" }, /* @__PURE__ */ React.createElement("input", { style: inputStyle, value: form.marketName, onChange: (e) => setForm((f) => ({ ...f, marketName: e.target.value })), placeholder: "\u0E40\u0E0A\u0E48\u0E19 \u0E15\u0E25\u0E32\u0E14\u0E17\u0E30\u0E40\u0E25\u0E44\u0E17\u0E22, \u0E41\u0E1E\u0E1B\u0E39\u0E1A\u0E49\u0E32\u0E19\u0E14\u0E2D\u0E19" })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E2B\u0E21\u0E32\u0E22\u0E40\u0E2B\u0E15\u0E38" }, /* @__PURE__ */ React.createElement("textarea", { style: { ...inputStyle, minHeight: 50 }, value: form.notes, onChange: (e) => setForm((f) => ({ ...f, notes: e.target.value })) })), /* @__PURE__ */ React.createElement(Btn, { tone: "seagrass", onClick: submit }, "+ \u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E23\u0E32\u0E04\u0E32")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 18 } }, /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E41\u0E19\u0E27\u0E42\u0E19\u0E49\u0E21\u0E23\u0E32\u0E04\u0E32"), /* @__PURE__ */ React.createElement("select", { style: { ...inputStyle, width: 140, padding: "5px 8px", fontSize: 12 }, value: chartCategory, onChange: (e) => setChartCategory(e.target.value) }, CRAB_CATEGORIES.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.key, value: c.key }, c.label)))), /* @__PURE__ */ React.createElement(LineChartSVG, { series: chartSeries, yFormat: (v) => num(v, 0) })), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E1B\u0E23\u0E30\u0E27\u0E31\u0E15\u0E34\u0E23\u0E32\u0E04\u0E32\u0E15\u0E25\u0E32\u0E14"), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto", maxHeight: 340, overflowY: "auto" } }, /* @__PURE__ */ React.createElement("table", { style: tableStyle }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E44\u0E0B\u0E2A\u0E4C"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E23\u0E32\u0E04\u0E32\u0E2A\u0E48\u0E07"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E23\u0E32\u0E04\u0E32\u0E1B\u0E35\u0E01"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E15\u0E25\u0E32\u0E14/\u0E41\u0E2B\u0E25\u0E48\u0E07\u0E23\u0E32\u0E04\u0E32"), /* @__PURE__ */ React.createElement("th", { style: thStyle }))), /* @__PURE__ */ React.createElement("tbody", null, sorted.map((m) => /* @__PURE__ */ React.createElement("tr", { key: m.id }, /* @__PURE__ */ React.createElement("td", { style: tdStyle }, fmtDate(m.date)), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, crabCategoryLabel(m.category)), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, m.sizeLabel || "\u2014"), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO } }, m.wholesalePrice != null ? num(m.wholesalePrice) : "\u2014"), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO } }, m.agentPrice != null ? num(m.agentPrice) : "\u2014"), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, m.marketName || "\u2014", m.source === "ai" ? " \u{1F916}" : ""), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => onDelete(m.id), style: { background: "none", border: "none", color: C.coral, cursor: "pointer", fontSize: 12 } }, "\u0E25\u0E1A")))), sorted.length === 0 && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { style: tdStyle, colSpan: 7 }, "\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E23\u0E32\u0E04\u0E32\u0E15\u0E25\u0E32\u0E14"))))))));
+}
+function CustomersPanel({ customers, onSave, onDelete }) {
+  const blank = () => ({ id: null, name: "", phone: "", type: "regular", address: "", notes: "" });
+  const [form, setForm] = useState(blank());
+  const submit = () => {
+    if (!form.name.trim()) {
+      alert("\u0E01\u0E23\u0E2D\u0E01\u0E0A\u0E37\u0E48\u0E2D\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32");
+      return;
+    }
+    onSave({ ...form, id: form.id || uid(), createdAt: form.createdAt || (/* @__PURE__ */ new Date()).toISOString() });
+    setForm(blank());
+  };
+  const edit = (c) => setForm({ ...c });
+  const sorted = [...customers].sort((a, b) => (a.name || "").localeCompare(b.name || "", "th"));
+  return /* @__PURE__ */ React.createElement("div", { className: "cf-grid-2col", style: { display: "grid", gridTemplateColumns: "320px 1fr", gap: 20, alignItems: "start" } }, /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, form.id ? "\u0E41\u0E01\u0E49\u0E44\u0E02\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32" : "\u0E40\u0E1E\u0E34\u0E48\u0E21\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32\u0E43\u0E2B\u0E21\u0E48"), /* @__PURE__ */ React.createElement(Field, { label: "\u0E0A\u0E37\u0E48\u0E2D\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32" }, /* @__PURE__ */ React.createElement("input", { style: inputStyle, value: form.name, onChange: (e) => setForm((f) => ({ ...f, name: e.target.value })) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E42\u0E17\u0E23" }, /* @__PURE__ */ React.createElement("input", { style: inputStyle, value: form.phone, onChange: (e) => setForm((f) => ({ ...f, phone: e.target.value })) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32" }, /* @__PURE__ */ React.createElement("select", { style: inputStyle, value: form.type, onChange: (e) => setForm((f) => ({ ...f, type: e.target.value })) }, /* @__PURE__ */ React.createElement("option", { value: "regular" }, CUSTOMER_TYPE_LABELS.regular), /* @__PURE__ */ React.createElement("option", { value: "agent" }, CUSTOMER_TYPE_LABELS.agent))), /* @__PURE__ */ React.createElement(Field, { label: "\u0E17\u0E35\u0E48\u0E2D\u0E22\u0E39\u0E48/\u0E1E\u0E37\u0E49\u0E19\u0E17\u0E35\u0E48" }, /* @__PURE__ */ React.createElement("input", { style: inputStyle, value: form.address, onChange: (e) => setForm((f) => ({ ...f, address: e.target.value })) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E2B\u0E21\u0E32\u0E22\u0E40\u0E2B\u0E15\u0E38" }, /* @__PURE__ */ React.createElement("textarea", { style: { ...inputStyle, minHeight: 50 }, value: form.notes, onChange: (e) => setForm((f) => ({ ...f, notes: e.target.value })) })), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement(Btn, { tone: "seagrass", onClick: submit }, form.id ? "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E01\u0E32\u0E23\u0E41\u0E01\u0E49\u0E44\u0E02" : "+ \u0E40\u0E1E\u0E34\u0E48\u0E21\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32"), form.id && /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", onClick: () => setForm(blank()) }, "\u0E22\u0E01\u0E40\u0E25\u0E34\u0E01"))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: `${customers.length} \u0E23\u0E32\u0E22` }, "\u0E23\u0E32\u0E22\u0E0A\u0E37\u0E48\u0E2D\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32"), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { style: tableStyle }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E0A\u0E37\u0E48\u0E2D"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E42\u0E17\u0E23"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E17\u0E35\u0E48\u0E2D\u0E22\u0E39\u0E48"), /* @__PURE__ */ React.createElement("th", { style: thStyle }))), /* @__PURE__ */ React.createElement("tbody", null, sorted.map((c) => /* @__PURE__ */ React.createElement("tr", { key: c.id }, /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontWeight: 700 } }, c.name), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement(Pill, { tone: c.type === "agent" ? "info" : "muted" }, CUSTOMER_TYPE_LABELS[c.type] || c.type)), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, c.phone || "\u2014"), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, c.address || "\u2014"), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => edit(c), style: { background: "none", border: "none", color: C.water, cursor: "pointer", fontSize: 12, marginRight: 10 } }, "\u0E41\u0E01\u0E49\u0E44\u0E02"), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => onDelete(c.id), style: { background: "none", border: "none", color: C.coral, cursor: "pointer", fontSize: 12 } }, "\u0E25\u0E1A")))), sorted.length === 0 && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { style: tdStyle, colSpan: 5 }, "\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32")))))));
+}
+function OrdersPanel({ orders, customers, boxes, settings, onSave, onDelete }) {
+  const blank = () => ({
+    id: null,
+    customerId: "",
+    customerName: "",
+    category: "male",
+    sizeLabel: (settings.crabSizePresets || [])[0] || "",
+    quantityKg: "",
+    dueDate: todayStr(),
+    jobType: "live",
+    status: "pending",
+    notes: ""
+  });
+  const [form, setForm] = useState(blank());
+  const stock = categoryStockKg(boxes, form.category);
+  const reserved = orderReservedKg(orders, form.category, form.id);
+  const available = stock - reserved;
+  const requestedKg = Number(form.quantityKg) || 0;
+  const overAvailable = requestedKg > 0 && requestedKg > available;
+
+  const submit = async () => {
+    const customer = customers.find((c) => c.id === form.customerId);
+    const name = customer ? customer.name : form.customerName;
+    if (!name || !name.trim()) {
+      alert("\u0E23\u0E30\u0E1A\u0E38\u0E0A\u0E37\u0E48\u0E2D\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32");
+      return;
+    }
+    if (!requestedKg) {
+      alert("\u0E01\u0E23\u0E2D\u0E01\u0E08\u0E33\u0E19\u0E27\u0E19 (\u0E01\u0E01.)");
+      return;
+    }
+    if (overAvailable && form.status === "pending") {
+      const ok = await askConfirm(`\u0E2A\u0E15\u0E47\u0E2D\u0E01\u0E1B\u0E39\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17 "${crabCategoryLabel(form.category)}" \u0E17\u0E35\u0E48\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07\u0E2D\u0E22\u0E39\u0E48\u0E21\u0E35\u0E1E\u0E2D\u0E41\u0E04\u0E48 ${num(available, 1)} \u0E01\u0E01. (\u0E04\u0E33\u0E19\u0E27\u0E13\u0E08\u0E32\u0E01\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E17\u0E35\u0E48\u0E21\u0E35 \u0E2B\u0E31\u0E01\u0E2D\u0E2D\u0E40\u0E14\u0E2D\u0E23\u0E4C\u0E04\u0E49\u0E32\u0E07\u0E2D\u0E37\u0E48\u0E19\u0E41\u0E25\u0E49\u0E27) \u0E41\u0E15\u0E48\u0E2D\u0E2D\u0E40\u0E14\u0E2D\u0E23\u0E4C\u0E19\u0E35\u0E49\u0E02\u0E2D ${num(requestedKg, 1)} \u0E01\u0E01. \u2014 \u0E22\u0E37\u0E19\u0E22\u0E31\u0E19\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E15\u0E48\u0E2D\u0E44\u0E1B\u0E44\u0E2B\u0E21?`);
+      if (!ok) return;
+    }
+    onSave({
+      ...form,
+      id: form.id || uid(),
+      customerName: name,
+      quantityKg: requestedKg,
+      createdAt: form.createdAt || (/* @__PURE__ */ new Date()).toISOString()
+    });
+    setForm(blank());
+  };
+  const edit = (o) => setForm({ ...o, customerId: o.customerId || "", customerName: o.customerName || "" });
+  const setStatus = (o, status) => onSave({ ...o, status });
+  const sorted = [...orders].sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+  const pendingCount = orders.filter((o) => o.status === "pending").length;
+  return /* @__PURE__ */ React.createElement("div", { className: "cf-grid-2col", style: { display: "grid", gridTemplateColumns: "360px 1fr", gap: 20, alignItems: "start" } }, /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, form.id ? "\u0E41\u0E01\u0E49\u0E44\u0E02\u0E2D\u0E2D\u0E40\u0E14\u0E2D\u0E23\u0E4C" : "\u0E08\u0E2D\u0E07\u0E1B\u0E39 / \u0E23\u0E31\u0E1A\u0E2D\u0E2D\u0E40\u0E14\u0E2D\u0E23\u0E4C\u0E43\u0E2B\u0E21\u0E48"), /* @__PURE__ */ React.createElement(Field, { label: "\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32 (\u0E40\u0E25\u0E37\u0E2D\u0E01\u0E08\u0E32\u0E01\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32\u0E1B\u0E23\u0E30\u0E08\u0E33)" }, /* @__PURE__ */ React.createElement("select", { style: inputStyle, value: form.customerId, onChange: (e) => setForm((f) => ({ ...f, customerId: e.target.value, customerName: "" })) }, /* @__PURE__ */ React.createElement("option", { value: "" }, "\u2014 \u0E40\u0E25\u0E37\u0E2D\u0E01\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32 \u2014"), customers.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.id, value: c.id }, c.name, " (", CUSTOMER_TYPE_LABELS[c.type] || c.type, ")")))), !form.customerId && /* @__PURE__ */ React.createElement(Field, { label: "\u0E2B\u0E23\u0E37\u0E2D\u0E01\u0E23\u0E2D\u0E01\u0E0A\u0E37\u0E48\u0E2D\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32\u0E43\u0E2B\u0E21\u0E48" }, /* @__PURE__ */ React.createElement("input", { style: inputStyle, value: form.customerName, onChange: (e) => setForm((f) => ({ ...f, customerName: e.target.value })) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E07\u0E32\u0E19" }, /* @__PURE__ */ React.createElement("select", { style: inputStyle, value: form.jobType, onChange: (e) => setForm((f) => ({ ...f, jobType: e.target.value })) }, ORDER_JOB_TYPES.map((j) => /* @__PURE__ */ React.createElement("option", { key: j.key, value: j.key }, j.label)))), /* @__PURE__ */ React.createElement(Field, { label: "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E1B\u0E39" }, /* @__PURE__ */ React.createElement("select", { style: inputStyle, value: form.category, onChange: (e) => setForm((f) => ({ ...f, category: e.target.value })) }, CRAB_CATEGORIES.map((c) => /* @__PURE__ */ React.createElement("option", { key: c.key, value: c.key }, c.label)))), /* @__PURE__ */ React.createElement(Field, { label: "\u0E44\u0E0B\u0E2A\u0E4C" }, /* @__PURE__ */ React.createElement("input", { list: "crabfarm-size-presets-order", style: inputStyle, value: form.sizeLabel, onChange: (e) => setForm((f) => ({ ...f, sizeLabel: e.target.value })), placeholder: "\u0E40\u0E0A\u0E48\u0E19 3-4 \u0E15\u0E31\u0E27/\u0E01\u0E01." }), /* @__PURE__ */ React.createElement("datalist", { id: "crabfarm-size-presets-order" }, (settings.crabSizePresets || []).map((s) => /* @__PURE__ */ React.createElement("option", { key: s, value: s })))), /* @__PURE__ */ React.createElement(Field, { label: "\u0E08\u0E33\u0E19\u0E27\u0E19 (\u0E01\u0E01.)", hint: `\u0E04\u0E07\u0E40\u0E2B\u0E25\u0E37\u0E2D\u0E43\u0E19\u0E01\u0E25\u0E48\u0E2D\u0E07 (\u0E2B\u0E31\u0E01\u0E2D\u0E2D\u0E40\u0E14\u0E2D\u0E23\u0E4C\u0E04\u0E49\u0E32\u0E07\u0E2D\u0E37\u0E48\u0E19\u0E41\u0E25\u0E49\u0E27): ${num(available, 1)} \u0E01\u0E01.` }, /* @__PURE__ */ React.createElement("input", { type: "number", step: "any", style: { ...inputStyle, ...(overAvailable ? { borderColor: C.coral, background: "rgba(226,96,58,0.06)" } : {}) }, value: form.quantityKg, onChange: (e) => setForm((f) => ({ ...f, quantityKg: e.target.value })) }), overAvailable && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: C.coral, marginTop: 3 } }, "\u26A0\uFE0F \u0E40\u0E01\u0E34\u0E19\u0E08\u0E33\u0E19\u0E27\u0E19\u0E17\u0E35\u0E48\u0E21\u0E35\u0E2D\u0E22\u0E39\u0E48\u0E15\u0E2D\u0E19\u0E19\u0E35\u0E49")), /* @__PURE__ */ React.createElement(Field, { label: "\u0E27\u0E31\u0E19\u0E01\u0E33\u0E2B\u0E19\u0E14\u0E2A\u0E48\u0E07" }, /* @__PURE__ */ React.createElement("input", { type: "date", style: inputStyle, value: form.dueDate, onChange: (e) => setForm((f) => ({ ...f, dueDate: e.target.value })) })), /* @__PURE__ */ React.createElement(Field, { label: "\u0E2A\u0E16\u0E32\u0E19\u0E30" }, /* @__PURE__ */ React.createElement("select", { style: inputStyle, value: form.status, onChange: (e) => setForm((f) => ({ ...f, status: e.target.value })) }, /* @__PURE__ */ React.createElement("option", { value: "pending" }, ORDER_STATUS_LABELS.pending), /* @__PURE__ */ React.createElement("option", { value: "fulfilled" }, ORDER_STATUS_LABELS.fulfilled), /* @__PURE__ */ React.createElement("option", { value: "cancelled" }, ORDER_STATUS_LABELS.cancelled))), /* @__PURE__ */ React.createElement(Field, { label: "\u0E2B\u0E21\u0E32\u0E22\u0E40\u0E2B\u0E15\u0E38" }, /* @__PURE__ */ React.createElement("textarea", { style: { ...inputStyle, minHeight: 50 }, value: form.notes, onChange: (e) => setForm((f) => ({ ...f, notes: e.target.value })) })), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement(Btn, { tone: "seagrass", onClick: submit }, form.id ? "\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E01\u0E32\u0E23\u0E41\u0E01\u0E49\u0E44\u0E02" : "+ \u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E2D\u0E2D\u0E40\u0E14\u0E2D\u0E23\u0E4C"), form.id && /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", onClick: () => setForm(blank()) }, "\u0E22\u0E01\u0E40\u0E25\u0E34\u0E01\u0E41\u0E01\u0E49\u0E44\u0E02"))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: `\u0E04\u0E49\u0E32\u0E07\u0E2A\u0E48\u0E07 ${pendingCount} \u0E2D\u0E2D\u0E40\u0E14\u0E2D\u0E23\u0E4C` }, "\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E08\u0E2D\u0E07 / \u0E2D\u0E2D\u0E40\u0E14\u0E2D\u0E23\u0E4C"), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { style: tableStyle }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E01\u0E33\u0E2B\u0E19\u0E14\u0E2A\u0E48\u0E07"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E1B\u0E39"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E44\u0E0B\u0E2A\u0E4C"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E07\u0E32\u0E19"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E08\u0E33\u0E19\u0E27\u0E19 (\u0E01\u0E01.)"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E2A\u0E16\u0E32\u0E19\u0E30"), /* @__PURE__ */ React.createElement("th", { style: thStyle }))), /* @__PURE__ */ React.createElement("tbody", null, sorted.map((o) => /* @__PURE__ */ React.createElement("tr", { key: o.id }, /* @__PURE__ */ React.createElement("td", { style: tdStyle }, fmtDate(o.dueDate)), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, o.customerName), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, crabCategoryLabel(o.category)), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, o.sizeLabel || "\u2014"), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, (ORDER_JOB_TYPES.find((j) => j.key === o.jobType) || {}).label || o.jobType), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO } }, num(o.quantityKg, 1)), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, /* @__PURE__ */ React.createElement(Pill, { tone: o.status === "fulfilled" ? "good" : o.status === "cancelled" ? "muted" : "warn" }, ORDER_STATUS_LABELS[o.status] || o.status)), /* @__PURE__ */ React.createElement("td", { style: tdStyle }, o.status === "pending" && /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => setStatus(o, "fulfilled"), style: { background: "none", border: "none", color: C.seagrass, cursor: "pointer", fontSize: 12, marginRight: 8 } }, "\u0E2A\u0E48\u0E07\u0E41\u0E25\u0E49\u0E27"), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => edit(o), style: { background: "none", border: "none", color: C.water, cursor: "pointer", fontSize: 12, marginRight: 8 } }, "\u0E41\u0E01\u0E49\u0E44\u0E02"), /* @__PURE__ */ React.createElement("button", { type: "button", onClick: () => onDelete(o.id), style: { background: "none", border: "none", color: C.coral, cursor: "pointer", fontSize: 12 } }, "\u0E25\u0E1A")))), sorted.length === 0 && /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("td", { style: tdStyle, colSpan: 8 }, "\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E2D\u0E2D\u0E40\u0E14\u0E2D\u0E23\u0E4C")))))));
+}
+function MarketHubTab({ marketPrices, customers, orders, boxes, settings, onAddPrice, onDeletePrice, onSaveCustomer, onDeleteCustomer, onSaveOrder, onDeleteOrder }) {
+  const [subTab, setSubTab] = useState("prices");
+  const subNav = [
+    { id: "prices", label: "\u0E23\u0E32\u0E04\u0E32\u0E15\u0E25\u0E32\u0E14" },
+    { id: "customers", label: "\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32" },
+    { id: "orders", label: "\u0E08\u0E2D\u0E07\u0E1B\u0E39 / \u0E2D\u0E2D\u0E40\u0E14\u0E2D\u0E23\u0E4C" }
+  ];
+  return /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, background: "#E4E9E2", borderRadius: 10, padding: 3, marginBottom: 18, width: "fit-content" } }, subNav.map((s) => /* @__PURE__ */ React.createElement("button", { key: s.id, type: "button", onClick: () => setSubTab(s.id), style: { padding: "7px 16px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: BODY, background: subTab === s.id ? C.card : "transparent", color: subTab === s.id ? C.ink : C.muted, boxShadow: subTab === s.id ? "0 1px 3px rgba(11,35,51,0.15)" : "none" } }, s.label))), subTab === "prices" && /* @__PURE__ */ React.createElement(MarketPricesPanel, { marketPrices, settings, onAdd: onAddPrice, onDelete: onDeletePrice }), subTab === "customers" && /* @__PURE__ */ React.createElement(CustomersPanel, { customers, onSave: onSaveCustomer, onDelete: onDeleteCustomer }), subTab === "orders" && /* @__PURE__ */ React.createElement(OrdersPanel, { orders, customers, boxes, settings, onSave: onSaveOrder, onDelete: onDeleteOrder }));
 }
 function AlertsTab({ boxAlerts, overviewAlerts, boxes, onOpenBox }) {
   const findBox = (boxNumber) => boxes.find((b) => b.boxNumber === boxNumber);
@@ -1803,6 +2082,9 @@ function App() {
   const [boxes, setBoxes] = useState([]);
   const [history, setHistory] = useState([]);
   const [waterLogs, setWaterLogs] = useState([]);
+  const [marketPrices, setMarketPrices] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [orders, setOrders] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [tab, setTab] = useState("dashboard");
   const [openBox, setOpenBox] = useState(null);
@@ -1837,11 +2119,14 @@ function App() {
     }, 12e3);
     (async () => {
       try {
-        const [b, h, w, s] = await Promise.all([
+        const [b, h, w, s, mk, cu, ord] = await Promise.all([
           storeGetCollection(COL_BOXES),
           storeGetCollection(COL_HISTORY),
           storeGetCollection(COL_WATER),
-          storeGetSettings()
+          storeGetSettings(),
+          storeGetCollection(COL_MARKET),
+          storeGetCollection(COL_CUSTOMERS),
+          storeGetCollection(COL_ORDERS)
         ]);
         if (cancelled) return;
         const deduped = dedupeBoxes(b);
@@ -1850,6 +2135,9 @@ function App() {
         setHistory(h);
         setWaterLogs(w);
         setSettings(mergeSettings(s));
+        setMarketPrices(mk);
+        setCustomers(cu);
+        setOrders(ord);
       } catch (e) {
         console.error("crabfarm: load failed", e);
       } finally {
@@ -1879,11 +2167,14 @@ function App() {
     const poll = async () => {
       if (editingOpenRef.current) return;
       try {
-        const [b, h, w, s] = await Promise.all([
+        const [b, h, w, s, mk, cu, ord] = await Promise.all([
           storeGetCollection(COL_BOXES),
           storeGetCollection(COL_HISTORY),
           storeGetCollection(COL_WATER),
-          storeGetSettings()
+          storeGetSettings(),
+          storeGetCollection(COL_MARKET),
+          storeGetCollection(COL_CUSTOMERS),
+          storeGetCollection(COL_ORDERS)
         ]);
         if (stopped) return;
         const deduped = dedupeBoxes(b);
@@ -1895,6 +2186,9 @@ function App() {
           const next = mergeSettings(s);
           return JSON.stringify(prev) === JSON.stringify(next) ? prev : next;
         });
+        setMarketPrices((prev) => JSON.stringify(prev) === JSON.stringify(mk) ? prev : mk);
+        setCustomers((prev) => JSON.stringify(prev) === JSON.stringify(cu) ? prev : cu);
+        setOrders((prev) => JSON.stringify(prev) === JSON.stringify(ord) ? prev : ord);
         setLastSynced(/* @__PURE__ */ new Date());
       } catch (e) {
         console.error("crabfarm: background sync failed", e);
@@ -1918,6 +2212,44 @@ function App() {
     setWaterLogs(next);
     storeSetCollection(COL_WATER, next, changedIds);
   }, []);
+  const persistMarket = useCallback((next, changedIds) => {
+    setMarketPrices(next);
+    storeSetCollection(COL_MARKET, next, changedIds);
+  }, []);
+  const persistCustomers = useCallback((next, changedIds) => {
+    setCustomers(next);
+    storeSetCollection(COL_CUSTOMERS, next, changedIds);
+  }, []);
+  const persistOrders = useCallback((next, changedIds) => {
+    setOrders(next);
+    storeSetCollection(COL_ORDERS, next, changedIds);
+  }, []);
+  const addMarketPrice = useCallback((entry) => {
+    persistMarket([...marketPrices, entry], [entry.id]);
+  }, [marketPrices, persistMarket]);
+  const deleteMarketPrice = useCallback((id) => {
+    persistMarket(marketPrices.filter((m) => m.id !== id), [id]);
+  }, [marketPrices, persistMarket]);
+  const saveCustomer = useCallback((customer) => {
+    const exists = customers.some((c) => c.id === customer.id);
+    const next = exists ? customers.map((c) => c.id === customer.id ? customer : c) : [...customers, customer];
+    persistCustomers(next, [customer.id]);
+  }, [customers, persistCustomers]);
+  const deleteCustomer = useCallback(async (id) => {
+    const ok = await askConfirm("\u0E25\u0E1A\u0E25\u0E39\u0E01\u0E04\u0E49\u0E32\u0E23\u0E32\u0E22\u0E19\u0E35\u0E49?");
+    if (!ok) return;
+    persistCustomers(customers.filter((c) => c.id !== id), [id]);
+  }, [customers, persistCustomers]);
+  const saveOrder = useCallback((order) => {
+    const exists = orders.some((o) => o.id === order.id);
+    const next = exists ? orders.map((o) => o.id === order.id ? order : o) : [...orders, order];
+    persistOrders(next, [order.id]);
+  }, [orders, persistOrders]);
+  const deleteOrder = useCallback(async (id) => {
+    const ok = await askConfirm("\u0E25\u0E1A\u0E2D\u0E2D\u0E40\u0E14\u0E2D\u0E23\u0E4C\u0E19\u0E35\u0E49?");
+    if (!ok) return;
+    persistOrders(orders.filter((o) => o.id !== id), [id]);
+  }, [orders, persistOrders]);
   const persistSettings = useCallback(async (next) => {
     setSettings(next);
     return await storeSetSettings(next);
@@ -1929,7 +2261,10 @@ function App() {
       boxes,
       history,
       waterLogs,
-      settings
+      settings,
+      marketPrices,
+      customers,
+      orders
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -1940,7 +2275,7 @@ function App() {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-  }, [boxes, history, waterLogs, settings]);
+  }, [boxes, history, waterLogs, settings, marketPrices, customers, orders]);
   const importData = useCallback(async (data) => {
     if (!data || typeof data !== "object") {
       alert("\u0E44\u0E1F\u0E25\u0E4C\u0E44\u0E21\u0E48\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07");
@@ -1952,12 +2287,18 @@ function App() {
     const nh = Array.isArray(data.history) ? data.history : [];
     const nw = Array.isArray(data.waterLogs) ? data.waterLogs : [];
     const ns = data.settings && data.settings.parameters ? data.settings : DEFAULT_SETTINGS;
+    const nmk = Array.isArray(data.marketPrices) ? data.marketPrices : [];
+    const ncu = Array.isArray(data.customers) ? data.customers : [];
+    const nord = Array.isArray(data.orders) ? data.orders : [];
     persistBoxes(nb);
     persistHistory(nh);
     persistWater(nw);
     persistSettings(ns);
+    persistMarket(nmk);
+    persistCustomers(ncu);
+    persistOrders(nord);
     alert("\u0E19\u0E33\u0E40\u0E02\u0E49\u0E32\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E2A\u0E33\u0E40\u0E23\u0E47\u0E08");
-  }, [persistBoxes, persistHistory, persistWater, persistSettings]);
+  }, [persistBoxes, persistHistory, persistWater, persistSettings, persistMarket, persistCustomers, persistOrders]);
   const resetAll = useCallback(async () => {
     const ok = await askConfirm("\u0E22\u0E37\u0E19\u0E22\u0E31\u0E19\u0E25\u0E1A\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14\u0E43\u0E19\u0E40\u0E04\u0E23\u0E37\u0E48\u0E2D\u0E07\u0E19\u0E35\u0E49? \u0E01\u0E32\u0E23\u0E01\u0E23\u0E30\u0E17\u0E33\u0E19\u0E35\u0E49\u0E44\u0E21\u0E48\u0E2A\u0E32\u0E21\u0E32\u0E23\u0E16\u0E22\u0E49\u0E2D\u0E19\u0E01\u0E25\u0E31\u0E1A\u0E44\u0E14\u0E49");
     if (!ok) return;
@@ -1966,11 +2307,17 @@ function App() {
     storeClearCollection(COL_BOXES);
     storeClearCollection(COL_HISTORY);
     storeClearCollection(COL_WATER);
+    storeClearCollection(COL_MARKET);
+    storeClearCollection(COL_CUSTOMERS);
+    storeClearCollection(COL_ORDERS);
     storeClearSettings();
     setBoxes([]);
     setHistory([]);
     setWaterLogs([]);
     setSettings(DEFAULT_SETTINGS);
+    setMarketPrices([]);
+    setCustomers([]);
+    setOrders([]);
   }, []);
   const saveBox = (box) => {
     const exists = boxes.some((b) => b.id === box.id);
@@ -2214,7 +2561,7 @@ function App() {
   )), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.6 } }, activeBoxes.length, " \u0E01\u0E25\u0E48\u0E2D\u0E07\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07 \xB7 ", emptyBoxes.length, " \u0E01\u0E25\u0E48\u0E2D\u0E07\u0E27\u0E48\u0E32\u0E07")), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { className: "cf-topbar", style: { position: "sticky", top: 0, zIndex: 20, background: "rgba(238,242,237,0.92)", backdropFilter: "blur(6px)", padding: "16px 26px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${C.line}` } }, /* @__PURE__ */ React.createElement("div", { className: "cf-topbar-left", style: { display: "flex", alignItems: "center", gap: 12, minWidth: 0 } }, /* @__PURE__ */ React.createElement("button", { onClick: () => setSidebarCollapsed((v) => !v), title: sidebarCollapsed ? "\u0E41\u0E2A\u0E14\u0E07\u0E41\u0E16\u0E1A\u0E40\u0E21\u0E19\u0E39" : "\u0E0B\u0E48\u0E2D\u0E19\u0E41\u0E16\u0E1A\u0E40\u0E21\u0E19\u0E39", style: { background: C.card, border: `1px solid ${C.line}`, borderRadius: 8, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.ink, flexShrink: 0 } }, /* @__PURE__ */ React.createElement(IconMenu, null)), /* @__PURE__ */ React.createElement("div", { style: { fontFamily: DISPLAY, fontWeight: 700, fontSize: 21, color: C.ink } }, (_a = TABS.find((t) => t.id === tab)) == null ? void 0 : _a.label)), /* @__PURE__ */ React.createElement("div", { className: "cf-topbar-actions", style: { display: "flex", alignItems: "center", gap: 14 } }, /* @__PURE__ */ React.createElement("div", { className: "cf-sync-text", style: { fontSize: 12.5, color: C.muted, fontFamily: MONO, display: "flex", alignItems: "center", gap: 6 } }, /* @__PURE__ */ React.createElement("span", { style: { width: 7, height: 7, borderRadius: "50%", background: C.seagrass, display: "inline-block" }, title: "\u0E0B\u0E34\u0E07\u0E01\u0E4C\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E2D\u0E31\u0E15\u0E42\u0E19\u0E21\u0E31\u0E15\u0E34\u0E17\u0E38\u0E01 15 \u0E27\u0E34\u0E19\u0E32\u0E17\u0E35" }), lastSynced ? `\u0E2D\u0E31\u0E1B\u0E40\u0E14\u0E15\u0E25\u0E48\u0E32\u0E2A\u0E38\u0E14 ${lastSynced.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : (/* @__PURE__ */ new Date()).toLocaleDateString("th-TH", { weekday: "short", day: "numeric", month: "short", year: "numeric" })), /* @__PURE__ */ React.createElement("button", { onClick: () => { setTab("boxes"); setBoxViewMode("list"); setTimeout(() => { const el = document.getElementById("crabfarm-search-input"); if (el) el.focus(); }, 50); }, title: "\u0E04\u0E49\u0E19\u0E2B\u0E32\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E1B\u0E39", style: { background: C.card, border: `1px solid ${C.line}`, borderRadius: 8, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.ink } }, /* @__PURE__ */ React.createElement(IconSearch, null)), /* @__PURE__ */ React.createElement("button", { onClick: () => setShowScanner(true), title: "สแกน QR เพื่อเช็คกล่อง", style: { background: C.card, border: `1px solid ${C.line}`, borderRadius: 8, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.ink } }, /* @__PURE__ */ React.createElement(IconQr, null)), /* @__PURE__ */ React.createElement("div", { style: { position: "relative" } }, /* @__PURE__ */ React.createElement("button", { onClick: () => setShowAlerts((v) => !v), style: { position: "relative", background: C.card, border: `1px solid ${C.line}`, borderRadius: 8, width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.ink } }, /* @__PURE__ */ React.createElement(IconBell, null), alerts.length > 0 && /* @__PURE__ */ React.createElement("span", { style: { position: "absolute", top: -4, right: -4, background: C.coral, color: "#fff", fontSize: 10, fontWeight: 700, borderRadius: 10, minWidth: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px" } }, alerts.length)), showAlerts && /* @__PURE__ */ React.createElement("div", { style: { position: "absolute", right: 0, top: 42, width: 320, background: C.card, border: `1px solid ${C.line}`, borderRadius: 10, boxShadow: "0 12px 30px rgba(11,35,51,0.18)", padding: 10, zIndex: 30, maxHeight: 340, overflowY: "auto" } }, alerts.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12.5, color: C.muted, padding: 8 } }, "\u0E44\u0E21\u0E48\u0E21\u0E35\u0E01\u0E32\u0E23\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19"), alerts.map((a) => /* @__PURE__ */ React.createElement("div", { key: a.id, style: { padding: "8px 6px", borderBottom: `1px solid ${C.line}`, fontSize: 12.5 } }, /* @__PURE__ */ React.createElement(Pill, { tone: a.tone }, a.tone === "danger" ? "\u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E08\u0E31\u0E1A" : "\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19"), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 5 } }, a.text))))), /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", onClick: handleLogout }, /* @__PURE__ */ React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 6 } }, /* @__PURE__ */ React.createElement(IconLogout, { size: 14 }), "\u0E2D\u0E2D\u0E01\u0E08\u0E32\u0E01\u0E23\u0E30\u0E1A\u0E1A")), tab === "boxes" && /* @__PURE__ */ React.createElement(Btn, { tone: "coral", size: "sm", onClick: () => setShowNewBox(true) }, "+ \u0E40\u0E1E\u0E34\u0E48\u0E21\u0E01\u0E25\u0E48\u0E2D\u0E07"))), /* @__PURE__ */ React.createElement("div", { className: "cf-content", style: { padding: 26 } }, tab === "dashboard" && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 20 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 14, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14", value: boxes.length }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07\u0E2D\u0E22\u0E39\u0E48", value: activeBoxes.length, tone: "seagrass" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E27\u0E48\u0E32\u0E07", value: emptyBoxes.length }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E23\u0E27\u0E21 (biomass)", value: `${num(totalBiomass)} g`, tone: "water" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E33\u0E44\u0E23\u0E2A\u0E30\u0E2A\u0E21\u0E17\u0E31\u0E49\u0E07\u0E2B\u0E21\u0E14", value: `${money(totalProfit)} \u0E1A.`, tone: totalProfit >= 0 ? "seagrass" : "coral" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E15\u0E49\u0E19\u0E17\u0E38\u0E19\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E2A\u0E30\u0E2A\u0E21 (\u0E1B\u0E23\u0E30\u0E40\u0E21\u0E34\u0E19)", value: `${money(financeTotal.feedCostAccrued)} \u0E1A.`, tone: "water" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E33\u0E44\u0E23\u0E1B\u0E23\u0E30\u0E40\u0E21\u0E34\u0E19\u0E23\u0E27\u0E21 (\u0E1B\u0E31\u0E08\u0E08\u0E38\u0E1A\u0E31\u0E19)", value: `${money(financeTotal.profitNow)} \u0E1A.`, tone: financeTotal.profitNow >= 0 ? "seagrass" : "coral" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E01\u0E33\u0E44\u0E23\u0E1B\u0E23\u0E30\u0E40\u0E21\u0E34\u0E19/\u0E01\u0E01. (\u0E1B\u0E31\u0E08\u0E08\u0E38\u0E1A\u0E31\u0E19)", value: `${money(estProfitPerKgNow)} \u0E1A.`, tone: estProfitPerKgNow >= 0 ? "seagrass" : "coral" }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19\u0E17\u0E35\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E14\u0E33\u0E40\u0E19\u0E34\u0E19\u0E01\u0E32\u0E23", value: alerts.length, tone: alerts.length ? "coral" : "ink" })), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, null, "\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E41\u0E08\u0E49\u0E07\u0E40\u0E15\u0E37\u0E2D\u0E19"), alerts.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: C.muted } }, "\u0E44\u0E21\u0E48\u0E21\u0E35\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23\u0E17\u0E35\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E14\u0E33\u0E40\u0E19\u0E34\u0E19\u0E01\u0E32\u0E23\u0E15\u0E2D\u0E19\u0E19\u0E35\u0E49 \u{1F389}"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }, alerts.map((a) => /* @__PURE__ */ React.createElement("div", { key: a.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: a.tone === "danger" ? "rgba(226,96,58,0.08)" : "rgba(201,138,46,0.08)", borderRadius: 8 } }, /* @__PURE__ */ React.createElement(Pill, { tone: a.tone }, a.tone === "danger" ? "\u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E08\u0E31\u0E1A" : "\u0E40\u0E15\u0E37\u0E2D\u0E19"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 13 } }, a.text))))), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E2D\u0E49\u0E32\u0E07\u0E2D\u0E34\u0E07\u0E23\u0E32\u0E04\u0E32\u0E1B\u0E31\u0E08\u0E08\u0E38\u0E1A\u0E31\u0E19\u0E41\u0E25\u0E30\u0E23\u0E32\u0E04\u0E32\u0E04\u0E32\u0E14\u0E01\u0E32\u0E23\u0E13\u0E4C\u0E08\u0E32\u0E01\u0E2B\u0E19\u0E49\u0E32\u0E15\u0E31\u0E49\u0E07\u0E04\u0E48\u0E32 \u0E40\u0E17\u0E35\u0E22\u0E1A\u0E01\u0E31\u0E1A\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E02\u0E32\u0E22\u0E17\u0E35\u0E48\u0E15\u0E31\u0E49\u0E07\u0E44\u0E27\u0E49 \u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E41\u0E2A\u0E14\u0E07\u0E1B\u0E23\u0E34\u0E21\u0E32\u0E13\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E17\u0E35\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E43\u0E0A\u0E49\u0E15\u0E48\u0E2D\u0E27\u0E31\u0E19\u0E02\u0E2D\u0E07\u0E1B\u0E39\u0E41\u0E15\u0E48\u0E25\u0E30\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17" }, "\u0E15\u0E49\u0E19\u0E17\u0E38\u0E19\u0E2D\u0E32\u0E2B\u0E32\u0E23 & \u0E01\u0E33\u0E44\u0E23\u0E1B\u0E23\u0E30\u0E40\u0E21\u0E34\u0E19 (\u0E08\u0E32\u0E01\u0E1B\u0E39\u0E17\u0E35\u0E48\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07\u0E2D\u0E22\u0E39\u0E48)"), /* @__PURE__ */ React.createElement("div", { style: { overflowX: "auto" } }, /* @__PURE__ */ React.createElement("table", { style: tableStyle }, /* @__PURE__ */ React.createElement("thead", null, /* @__PURE__ */ React.createElement("tr", null, /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E1B\u0E23\u0E30\u0E40\u0E20\u0E17\u0E1B\u0E39"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E08\u0E33\u0E19\u0E27\u0E19\u0E01\u0E25\u0E48\u0E2D\u0E07"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E19\u0E49\u0E33\u0E2B\u0E19\u0E31\u0E01\u0E23\u0E27\u0E21 (\u0E01\u0E01.)"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22 (\u0E01\u0E01.)"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E2D\u0E32\u0E2B\u0E32\u0E23/\u0E27\u0E31\u0E19 (\u0E01\u0E01.)"), /* @__PURE__ */ React.createElement("th", { style: { ...thStyle, borderLeft: `2px solid ${C.line}` } }, "\u0E15\u0E49\u0E19\u0E17\u0E38\u0E19\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E2A\u0E30\u0E2A\u0E21 (\u0E1A\u0E32\u0E17)"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E01\u0E33\u0E44\u0E23\u0E1B\u0E23\u0E30\u0E40\u0E21\u0E34\u0E19 (\u0E1A\u0E32\u0E17, \u0E23\u0E32\u0E04\u0E32\u0E1B\u0E31\u0E08\u0E08\u0E38\u0E1A\u0E31\u0E19)"), /* @__PURE__ */ React.createElement("th", { style: thStyle }, "\u0E01\u0E33\u0E44\u0E23\u0E04\u0E32\u0E14\u0E01\u0E32\u0E23\u0E13\u0E4C (\u0E1A\u0E32\u0E17, \u0E23\u0E32\u0E04\u0E32\u0E04\u0E32\u0E14\u0E01\u0E32\u0E23\u0E13\u0E4C)"))), /* @__PURE__ */ React.createElement("tbody", null, (["male","female","eggs"]).map((catKey) => { const b = financeByCategory[catKey]; const label = catKey === "male" ? "\u0E15\u0E31\u0E27\u0E1C\u0E39\u0E49" : catKey === "female" ? "\u0E15\u0E31\u0E27\u0E40\u0E21\u0E35\u0E22" : "\u0E1B\u0E39\u0E44\u0E02\u0E48"; const target = settings.salesTargets[catKey] || 0; const pct = target > 0 ? Math.min(100, b.weightKg / target * 100) : 0; const dailyFeedKg = b.feedPerDayTotal / 1e3; return /* @__PURE__ */ React.createElement("tr", { key: catKey }, /* @__PURE__ */ React.createElement("td", { style: tdStyle }, label), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO } }, b.count), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO } }, num(b.weightKg, 1)), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO } }, target ? `${num(target)} \u0E01\u0E01. (${num(pct,0)}%)` : "\u2014"), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO } }, `${num(dailyFeedKg, 2)} \u0E01\u0E01./\u0E27\u0E31\u0E19`), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO, borderLeft: `2px solid ${C.line}` } }, money(b.feedCostAccrued)), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO, color: b.profitNow >= 0 ? C.seagrass : C.coral, fontWeight: 700 } }, money(b.profitNow)), /* @__PURE__ */ React.createElement("td", { style: { ...tdStyle, fontFamily: MONO, color: b.profitForecast >= 0 ? C.seagrass : C.coral } }, money(b.profitForecast))); })))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11.5, color: C.muted, marginTop: 8 } }, "\u0E15\u0E49\u0E19\u0E17\u0E38\u0E19\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E04\u0E33\u0E19\u0E27\u0E13\u0E08\u0E32\u0E01 \"\u0E15\u0E49\u0E19\u0E17\u0E38\u0E19\u0E2D\u0E32\u0E2B\u0E32\u0E23\u0E15\u0E48\u0E2D\u0E01\u0E34\u0E42\u0E25\u0E01\u0E23\u0E31\u0E21\" x \u0E1B\u0E23\u0E34\u0E21\u0E32\u0E13\u0E2D\u0E32\u0E2B\u0E32\u0E23/\u0E27\u0E31\u0E19 x \u0E08\u0E33\u0E19\u0E27\u0E19\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07\u0E21\u0E32 (\u0E41\u0E1A\u0E1A\u0E1B\u0E23\u0E30\u0E40\u0E21\u0E34\u0E19) \u2014 \u0E41\u0E01\u0E49\u0E44\u0E02\u0E23\u0E32\u0E04\u0E32\u0E41\u0E25\u0E30\u0E40\u0E1B\u0E49\u0E32\u0E2B\u0E21\u0E32\u0E22\u0E44\u0E14\u0E49\u0E17\u0E35\u0E48\u0E2B\u0E19\u0E49\u0E32\u0E15\u0E31\u0E49\u0E07\u0E04\u0E48\u0E32")), /* @__PURE__ */ React.createElement("div", { style: cardStyle }, /* @__PURE__ */ React.createElement(SectionTitle, { sub: "\u0E20\u0E32\u0E1E\u0E23\u0E27\u0E21\u0E0A\u0E48\u0E27\u0E07\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33\u0E25\u0E48\u0E32\u0E2A\u0E38\u0E14" }, "\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33"), waterLogs.length === 0 ? /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: C.muted } }, '\u0E22\u0E31\u0E07\u0E44\u0E21\u0E48\u0E21\u0E35\u0E01\u0E32\u0E23\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33 \u2014 \u0E44\u0E1B\u0E17\u0E35\u0E48\u0E41\u0E17\u0E47\u0E1A "\u0E04\u0E38\u0E13\u0E20\u0E32\u0E1E\u0E19\u0E49\u0E33" \u0E40\u0E1E\u0E37\u0E48\u0E2D\u0E40\u0E23\u0E34\u0E48\u0E21\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01') : /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "0 24px" } }, settings.parameters.map((p) => {
     var _a2;
     return /* @__PURE__ */ React.createElement(GaugeBar, { key: p.key, param: p, value: (_a2 = waterLogs[waterLogs.length - 1].readings[p.key]) != null ? _a2 : null });
-  })))), tab === "boxes" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "cf-toolbar-row", style: { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, background: "#E4E9E2", borderRadius: 10, padding: 3 } }, /* @__PURE__ */ React.createElement(
+  }))), /* @__PURE__ */ React.createElement(DashboardChartsCard, { boxes: activeBoxes, waterLogs, settings, financeByCategory, history })), tab === "boxes" && /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { className: "cf-toolbar-row", style: { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 6, background: "#E4E9E2", borderRadius: 10, padding: 3 } }, /* @__PURE__ */ React.createElement(
     "button",
     {
       onClick: () => setBoxViewMode("plan"),
@@ -2260,7 +2607,7 @@ function App() {
         setShowNewBox(true);
       }
     }
-  ) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("input", { id: "crabfarm-search-input", className: "cf-field-flex", style: { ...inputStyle, width: 200 }, placeholder: "\u0E04\u0E49\u0E19\u0E2B\u0E32\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E01\u0E25\u0E48\u0E2D\u0E07\u2026", value: boxFilter.q, onChange: (e) => setBoxFilter((f) => ({ ...f, q: e.target.value })) }), /* @__PURE__ */ React.createElement("select", { className: "cf-field-flex", style: { ...inputStyle, width: 150 }, value: boxFilter.status, onChange: (e) => setBoxFilter((f) => ({ ...f, status: e.target.value })) }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "\u0E17\u0E38\u0E01\u0E2A\u0E16\u0E32\u0E19\u0E30"), /* @__PURE__ */ React.createElement("option", { value: "active" }, "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07"), /* @__PURE__ */ React.createElement("option", { value: "empty" }, "\u0E27\u0E48\u0E32\u0E07")), /* @__PURE__ */ React.createElement("select", { className: "cf-field-flex", style: { ...inputStyle, width: 150 }, value: boxFilter.sex, onChange: (e) => setBoxFilter((f) => ({ ...f, sex: e.target.value })) }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "\u0E17\u0E38\u0E01\u0E40\u0E1E\u0E28"), /* @__PURE__ */ React.createElement("option", { value: "male" }, "\u0E15\u0E31\u0E27\u0E1C\u0E39\u0E49"), /* @__PURE__ */ React.createElement("option", { value: "female" }, "\u0E15\u0E31\u0E27\u0E40\u0E21\u0E35\u0E22"))), /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", onClick: () => setPrintPicker(filteredBoxes.length ? filteredBoxes : boxes) }, "\u{1F5A8}\uFE0F \u0E1E\u0E34\u0E21\u0E1E\u0E4C\u0E2A\u0E15\u0E34\u0E01\u0E40\u0E01\u0E2D\u0E23\u0E4C QR"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "\u0E1E\u0E1A ", filteredBoxes.length.toLocaleString(), " \u0E01\u0E25\u0E48\u0E2D\u0E07"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 14 } }, pagedBoxes.map((b) => /* @__PURE__ */ React.createElement(BoxCard, { key: b.id, box: b, onOpen: setOpenBox, onQuickHarvest: setHarvestTarget, onQuickDeath: setDeathTarget, moltReminderDays: settings.moltReminderDays })), filteredBoxes.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { color: C.muted, fontSize: 13 } }, "\u0E44\u0E21\u0E48\u0E1E\u0E1A\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E15\u0E32\u0E21\u0E40\u0E07\u0E37\u0E48\u0E2D\u0E19\u0E44\u0E02")), listTotalPages > 1 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 14, marginTop: 20 } }, /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", disabled: listPageClamped === 0, onClick: () => setListPage(Math.max(0, listPageClamped - 1)) }, "\u2190 \u0E01\u0E48\u0E2D\u0E19\u0E2B\u0E19\u0E49\u0E32"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: C.muted, fontFamily: MONO } }, "\u0E2B\u0E19\u0E49\u0E32 ", listPageClamped + 1, " / ", listTotalPages), /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", disabled: listPageClamped >= listTotalPages - 1, onClick: () => setListPage(Math.min(listTotalPages - 1, listPageClamped + 1)) }, "\u0E16\u0E31\u0E14\u0E44\u0E1B \u2192")))), tab === "alerts" && /* @__PURE__ */ React.createElement(AlertsTab, { boxAlerts, overviewAlerts, boxes, onOpenBox: setOpenBox }), tab === "water" && /* @__PURE__ */ React.createElement(WaterTab, { waterLogs, settings, onAddLog: (l) => persistWater([...waterLogs, l], [l.id]), onUpdateSettings: persistSettings }), tab === "feed" && /* @__PURE__ */ React.createElement(FeedTab, { boxes, settings, onUpdateBox: updateBox, onUpdateSettings: persistSettings }), tab === "history" && /* @__PURE__ */ React.createElement(HistoryTab, { history }), tab === "assistant" && /* @__PURE__ */ React.createElement(AiAssistantTab, { boxes, activeBoxes, emptyBoxes, history, waterLogs, settings, financeTotal, totalBiomass, totalProfit }), tab === "settings" && /* @__PURE__ */ React.createElement(
+  ) : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("input", { id: "crabfarm-search-input", className: "cf-field-flex", style: { ...inputStyle, width: 200 }, placeholder: "\u0E04\u0E49\u0E19\u0E2B\u0E32\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E01\u0E25\u0E48\u0E2D\u0E07\u2026", value: boxFilter.q, onChange: (e) => setBoxFilter((f) => ({ ...f, q: e.target.value })) }), /* @__PURE__ */ React.createElement("select", { className: "cf-field-flex", style: { ...inputStyle, width: 150 }, value: boxFilter.status, onChange: (e) => setBoxFilter((f) => ({ ...f, status: e.target.value })) }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "\u0E17\u0E38\u0E01\u0E2A\u0E16\u0E32\u0E19\u0E30"), /* @__PURE__ */ React.createElement("option", { value: "active" }, "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E25\u0E35\u0E49\u0E22\u0E07"), /* @__PURE__ */ React.createElement("option", { value: "empty" }, "\u0E27\u0E48\u0E32\u0E07")), /* @__PURE__ */ React.createElement("select", { className: "cf-field-flex", style: { ...inputStyle, width: 150 }, value: boxFilter.sex, onChange: (e) => setBoxFilter((f) => ({ ...f, sex: e.target.value })) }, /* @__PURE__ */ React.createElement("option", { value: "all" }, "\u0E17\u0E38\u0E01\u0E40\u0E1E\u0E28"), /* @__PURE__ */ React.createElement("option", { value: "male" }, "\u0E15\u0E31\u0E27\u0E1C\u0E39\u0E49"), /* @__PURE__ */ React.createElement("option", { value: "female" }, "\u0E15\u0E31\u0E27\u0E40\u0E21\u0E35\u0E22"))), /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", onClick: () => setPrintPicker(filteredBoxes.length ? filteredBoxes : boxes) }, "\u{1F5A8}\uFE0F \u0E1E\u0E34\u0E21\u0E1E\u0E4C\u0E2A\u0E15\u0E34\u0E01\u0E40\u0E01\u0E2D\u0E23\u0E4C QR"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 12, color: C.muted, marginBottom: 10 } }, "\u0E1E\u0E1A ", filteredBoxes.length.toLocaleString(), " \u0E01\u0E25\u0E48\u0E2D\u0E07"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 14 } }, pagedBoxes.map((b) => /* @__PURE__ */ React.createElement(BoxCard, { key: b.id, box: b, onOpen: setOpenBox, onQuickHarvest: setHarvestTarget, onQuickDeath: setDeathTarget, moltReminderDays: settings.moltReminderDays })), filteredBoxes.length === 0 && /* @__PURE__ */ React.createElement("div", { style: { color: C.muted, fontSize: 13 } }, "\u0E44\u0E21\u0E48\u0E1E\u0E1A\u0E01\u0E25\u0E48\u0E2D\u0E07\u0E15\u0E32\u0E21\u0E40\u0E07\u0E37\u0E48\u0E2D\u0E19\u0E44\u0E02")), listTotalPages > 1 && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 14, marginTop: 20 } }, /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", disabled: listPageClamped === 0, onClick: () => setListPage(Math.max(0, listPageClamped - 1)) }, "\u2190 \u0E01\u0E48\u0E2D\u0E19\u0E2B\u0E19\u0E49\u0E32"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12.5, color: C.muted, fontFamily: MONO } }, "\u0E2B\u0E19\u0E49\u0E32 ", listPageClamped + 1, " / ", listTotalPages), /* @__PURE__ */ React.createElement(Btn, { tone: "ghost", size: "sm", disabled: listPageClamped >= listTotalPages - 1, onClick: () => setListPage(Math.min(listTotalPages - 1, listPageClamped + 1)) }, "\u0E16\u0E31\u0E14\u0E44\u0E1B \u2192")))), tab === "alerts" && /* @__PURE__ */ React.createElement(AlertsTab, { boxAlerts, overviewAlerts, boxes, onOpenBox: setOpenBox }), tab === "water" && /* @__PURE__ */ React.createElement(WaterTab, { waterLogs, settings, onAddLog: (l) => persistWater([...waterLogs, l], [l.id]), onUpdateSettings: persistSettings }), tab === "feed" && /* @__PURE__ */ React.createElement(FeedTab, { boxes, settings, onUpdateBox: updateBox, onUpdateSettings: persistSettings }), tab === "history" && /* @__PURE__ */ React.createElement(HistoryTab, { history }), tab === "market" && /* @__PURE__ */ React.createElement(MarketHubTab, { marketPrices, customers, orders, boxes: activeBoxes, settings, onAddPrice: addMarketPrice, onDeletePrice: deleteMarketPrice, onSaveCustomer: saveCustomer, onDeleteCustomer: deleteCustomer, onSaveOrder: saveOrder, onDeleteOrder: deleteOrder }), tab === "assistant" && /* @__PURE__ */ React.createElement(AiAssistantTab, { boxes, activeBoxes, emptyBoxes, history, waterLogs, settings, financeTotal, totalBiomass, totalProfit }), tab === "settings" && /* @__PURE__ */ React.createElement(
     SettingsTab,
     {
       settings,
